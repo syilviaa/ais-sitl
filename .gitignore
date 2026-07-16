@@ -1,0 +1,71 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build and dist
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Logs
+logs/
+*.log
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Gazebo
+.gazebo/
+gazebo_outputs/
+
+# PX4 builds
+builds/
+*.o
+*.so
+
+# Mac
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Misc
+*.pid
+*.lock
+*.tmp
+temp/
+cache/
+
+# GitHub
+.github/workflows/*.log
+
+# Large files (if needed)
+*.bag
+*.bagindex

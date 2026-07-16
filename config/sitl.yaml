@@ -1,0 +1,83 @@
+# AIS SITL Configuration
+# Defines parameters for PX4 SITL simulation environment
+
+sitl:
+  # Simulation type: gazebo, airsim, or native
+  simulator: gazebo
+
+  # Vehicle type: iris (quadrotor), typhoon (camera drone), etc.
+  vehicle_model: iris
+
+  # Initial position (latitude, longitude, altitude)
+  start_position:
+    lat: 47.3977
+    lon: 8.5455
+    alt: 0.0  # meters above ground
+
+  # Flight parameters
+  flight:
+    takeoff_altitude: 50.0  # meters
+    max_speed: 15.0  # m/s
+    battery_capacity: 5000  # mAh (simulated)
+    battery_warning_threshold: 20  # % charge
+    battery_critical_threshold: 5  # % charge
+
+mavlink:
+  # MAVLink protocol settings
+  protocol_version: 2  # MAVLink 2.0
+  default_port: 14540  # SITL simulator port
+  heartbeat_interval: 0.1  # seconds
+  telemetry_rate: 10  # Hz
+  max_latency_ms: 50  # Target RTT
+
+failsafe:
+  # Failsafe behavior
+  rc_loss_timeout: 3.0  # seconds before RTL triggered
+  battery_warning_action: "notify"  # "notify" or "rtl"
+  battery_critical_action: "rtl"  # "rtl" (Return to Launch)
+  default_action: "rtl"
+
+geofencing:
+  # No-Fly Zones configuration
+  enabled: true
+  nfz_file: "config/nfz_zones.geojson"
+
+  # Action on NFZ breach
+  breach_action: "hold"  # "hold" (hold position), "rtl" (return)
+
+  # Buffer zone around NFZ (meters)
+  buffer_distance: 10.0
+
+  # Validation: check mission before upload
+  validate_missions: true
+
+logging:
+  # Logging configuration
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  file: "logs/sitl.log"
+  max_size_mb: 100
+  backup_count: 5
+
+gazebo:
+  # Gazebo-specific settings
+  world_name: "iris_world"
+  gui: true  # Show Gazebo GUI
+
+  # Environment
+  wind_speed: 0.0  # m/s (0.0 = no wind)
+  gravity: 9.81  # m/s²
+
+  # Physics engine
+  physics_engine: "ode"  # ode, bullet, dart, simbody
+
+performance:
+  # Optimization settings
+  simulation_speed: 1.0  # 1.0 = realtime, >1.0 = faster
+  update_rate: 100  # Hz (simulation tick rate)
+  max_threads: 4
+
+# Mission planning defaults
+mission:
+  default_speed: 5.0  # m/s
+  waypoint_radius: 5.0  # meters (acceptance radius)
+  yaw_mode: "auto"  # auto, manual, poi (Point of Interest)
