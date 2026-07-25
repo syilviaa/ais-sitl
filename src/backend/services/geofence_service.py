@@ -14,7 +14,6 @@ from typing import Dict, List, Optional
 from datetime import datetime
 
 from src.backend.services.geofence_monitor import GeofenceMonitor
-from src.backend.database import SessionLocal
 from src.backend.models import NoFlyZone
 
 logger = logging.getLogger(__name__)

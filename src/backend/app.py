@@ -114,6 +114,24 @@ def create_app(config=None):
     # HEALTH CHECK
     # =====================================================================
 
+    @app.route('/', methods=['GET'])
+    @error_handler
+    def index():
+        """Root endpoint with API overview."""
+        return jsonify({
+            'name': 'AIS SITL Platform API',
+            'status': 'ok',
+            'version': '0.1.0',
+            'veha': 5,
+            'endpoints': {
+                'health': '/api/health',
+                'fleet': '/api/fleet/status',
+                'metrics': '/api/metrics/summary',
+                'geofence': '/api/geofence/list',
+            },
+            'note': 'Web dashboard (Vue) is deployed separately as a static site.',
+        })
+
     @app.route('/api/health', methods=['GET'])
     @error_handler
     def health():

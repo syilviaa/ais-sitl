@@ -15,7 +15,6 @@ from datetime import datetime
 
 from src.backend.services.drone_service import DroneService
 from src.backend.services.drone_coordinator import DroneCoordinator
-from src.backend.database import SessionLocal
 from src.backend.models import Drone
 
 logger = logging.getLogger(__name__)

@@ -130,7 +130,7 @@
 <script>
 import MapComponent from './components/MapComponent.vue'
 
-const API_BASE = 'http://127.0.0.1:5000/api'
+const API_BASE = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000'}/api`
 
 export default {
   name: 'App',
