@@ -28,6 +28,7 @@ from src.backend.services import (
     FailsafeServiceAPI,
 )
 from src.backend.services.fleet_service import FleetService
+from src.backend.services.recording_service import RecordingService
 from src.backend.database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,8 @@ def create_app(config=None):
     app.failsafe_service = None
     app.fleet_service = FleetService()
     app.fleet_service.set_database(SessionLocal)
+    app.recording_service = RecordingService()
+    app.recording_service.set_database(SessionLocal)
     app.clients = set()
 
     def broadcast_telemetry(payload):
@@ -455,6 +458,54 @@ def create_app(config=None):
     def fleet_emergency_stop():
         """Emergency stop all drones."""
         result = asyncio.run(app.fleet_service.emergency_stop())
+        return jsonify(result)
+
+    # =====================================================================
+    # RECORDING ENDPOINTS (VEHA 5 PHASE 3)
+    # =====================================================================
+
+    @app.route('/api/recording/start/<mission_id>', methods=['POST'])
+    @error_handler
+    def recording_start(mission_id):
+        """Start recording a mission."""
+        result = asyncio.run(app.recording_service.start_recording(mission_id))
+        return jsonify(result)
+
+    @app.route('/api/recording/stop/<mission_id>', methods=['POST'])
+    @error_handler
+    def recording_stop(mission_id):
+        """Stop recording and save mission."""
+        result = asyncio.run(app.recording_service.stop_recording(mission_id))
+        return jsonify(result)
+
+    @app.route('/api/recording/get/<mission_id>', methods=['GET'])
+    @error_handler
+    def recording_get(mission_id):
+        """Get recording details."""
+        result = asyncio.run(app.recording_service.get_recording(mission_id))
+        return jsonify(result)
+
+    @app.route('/api/recording/list', methods=['GET'])
+    @error_handler
+    def recording_list():
+        """List all recordings."""
+        limit = request.args.get('limit', 50, type=int)
+        result = asyncio.run(app.recording_service.list_recordings(limit))
+        return jsonify(result)
+
+    @app.route('/api/recording/playback/<mission_id>', methods=['GET'])
+    @error_handler
+    def recording_playback(mission_id):
+        """Get playback timeline for a recording."""
+        speed = request.args.get('speed', 1.0, type=float)
+        result = asyncio.run(app.recording_service.get_playback_timeline(mission_id, speed))
+        return jsonify(result)
+
+    @app.route('/api/recording/delete/<mission_id>', methods=['DELETE'])
+    @error_handler
+    def recording_delete(mission_id):
+        """Delete a recording."""
+        result = asyncio.run(app.recording_service.delete_recording(mission_id))
         return jsonify(result)
 
     # =====================================================================
