@@ -30,6 +30,7 @@ from src.backend.services import (
 from src.backend.services.fleet_service import FleetService
 from src.backend.services.recording_service import RecordingService
 from src.backend.services.geofence_service import GeofenceService
+from src.backend.services.metrics_service import MetricsService
 from src.backend.database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ def create_app(config=None):
     app.recording_service.set_database(SessionLocal)
     app.geofence_service = GeofenceService()
     app.geofence_service.set_database(SessionLocal)
+    app.metrics_service = MetricsService()
     app.clients = set()
 
     def broadcast_telemetry(payload):
@@ -602,6 +604,57 @@ def create_app(config=None):
         limit = request.args.get('limit', 100, type=int)
         result = asyncio.run(app.geofence_service.get_violations(zone_name, limit))
         return jsonify(result)
+
+    # =====================================================================
+    # METRICS ENDPOINTS (VEHA 5 PHASE 5)
+    # =====================================================================
+
+    @app.route('/metrics', methods=['GET'])
+    def metrics():
+        """Export metrics in Prometheus format."""
+        return app.metrics_service.get_prometheus_metrics(), 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+    @app.route('/api/metrics/summary', methods=['GET'])
+    @error_handler
+    def metrics_summary():
+        """Get metrics summary in JSON format."""
+        summary = app.metrics_service.get_metrics_summary()
+        return jsonify({
+            "success": True,
+            "metrics": summary,
+        })
+
+    @app.route('/api/metrics/update', methods=['POST'])
+    @error_handler
+    def metrics_update():
+        """Manually update metrics from services."""
+        try:
+            # Update metrics from active services
+            if app.fleet_service:
+                fleet_status = asyncio.run(app.fleet_service.get_fleet_status())
+                app.metrics_service.update_fleet_metrics(fleet_status)
+
+            if app.telemetry_service:
+                telemetry_stats = asyncio.run(app.telemetry_service.get_statistics())
+                app.metrics_service.update_telemetry_metrics(telemetry_stats)
+
+            if app.geofence_service:
+                zones = asyncio.run(app.geofence_service.list_zones())
+                geofence_data = {
+                    "zones_active": zones.get("count", 0),
+                    "violations_total": 0,  # Would need to aggregate from zones
+                }
+                app.metrics_service.update_geofence_metrics(geofence_data)
+
+            return jsonify({
+                "success": True,
+                "message": "Metrics updated",
+                "metrics": app.metrics_service.get_metrics_summary(),
+            })
+
+        except Exception as e:
+            logger.error(f"Metrics update error: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
 
     # =====================================================================
     # ERROR HANDLERS
