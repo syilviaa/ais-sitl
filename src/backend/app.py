@@ -29,6 +29,7 @@ from src.backend.services import (
 )
 from src.backend.services.fleet_service import FleetService
 from src.backend.services.recording_service import RecordingService
+from src.backend.services.geofence_service import GeofenceService
 from src.backend.database import SessionLocal
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,8 @@ def create_app(config=None):
     app.fleet_service.set_database(SessionLocal)
     app.recording_service = RecordingService()
     app.recording_service.set_database(SessionLocal)
+    app.geofence_service = GeofenceService()
+    app.geofence_service.set_database(SessionLocal)
     app.clients = set()
 
     def broadcast_telemetry(payload):
@@ -506,6 +509,98 @@ def create_app(config=None):
     def recording_delete(mission_id):
         """Delete a recording."""
         result = asyncio.run(app.recording_service.delete_recording(mission_id))
+        return jsonify(result)
+
+    # =====================================================================
+    # GEOFENCE ENDPOINTS (VEHA 5 PHASE 4)
+    # =====================================================================
+
+    @app.route('/api/geofence/create', methods=['POST'])
+    @error_handler
+    def geofence_create():
+        """Create a new geofence zone."""
+        data = request.json or {}
+        name = data.get('name')
+        polygon = data.get('polygon')
+        altitude_min = data.get('altitude_min', 0.0)
+        altitude_max = data.get('altitude_max')
+
+        if not name or not polygon:
+            return jsonify({"error": "Name and polygon required"}), 400
+
+        result = asyncio.run(app.geofence_service.create_zone(name, polygon, altitude_min, altitude_max))
+        return jsonify(result)
+
+    @app.route('/api/geofence/get/<zone_name>', methods=['GET'])
+    @error_handler
+    def geofence_get(zone_name):
+        """Get geofence zone details."""
+        result = asyncio.run(app.geofence_service.get_zone(zone_name))
+        return jsonify(result)
+
+    @app.route('/api/geofence/list', methods=['GET'])
+    @error_handler
+    def geofence_list():
+        """List all geofence zones."""
+        active_only = request.args.get('active', 'true', type=str).lower() == 'true'
+        result = asyncio.run(app.geofence_service.list_zones(active_only))
+        return jsonify(result)
+
+    @app.route('/api/geofence/update/<zone_name>', methods=['POST'])
+    @error_handler
+    def geofence_update(zone_name):
+        """Update geofence zone."""
+        data = request.json or {}
+        polygon = data.get('polygon')
+        altitude_min = data.get('altitude_min')
+        altitude_max = data.get('altitude_max')
+        active = data.get('active')
+
+        result = asyncio.run(app.geofence_service.update_zone(
+            zone_name, polygon, altitude_min, altitude_max, active
+        ))
+        return jsonify(result)
+
+    @app.route('/api/geofence/delete/<zone_name>', methods=['DELETE'])
+    @error_handler
+    def geofence_delete(zone_name):
+        """Delete geofence zone."""
+        result = asyncio.run(app.geofence_service.delete_zone(zone_name))
+        return jsonify(result)
+
+    @app.route('/api/geofence/validate-mission', methods=['POST'])
+    @error_handler
+    def geofence_validate_mission():
+        """Validate mission waypoints against geofence zones."""
+        data = request.json or {}
+        waypoints = data.get('waypoints', [])
+
+        if not waypoints:
+            return jsonify({"error": "Waypoints required"}), 400
+
+        result = asyncio.run(app.geofence_service.validate_mission(waypoints))
+        return jsonify(result)
+
+    @app.route('/api/geofence/check-position', methods=['POST'])
+    @error_handler
+    def geofence_check_position():
+        """Check drone position against geofence zones."""
+        data = request.json or {}
+        drone_id = data.get('drone_id')
+        position = data.get('position', {})
+
+        if not drone_id:
+            return jsonify({"error": "Drone ID required"}), 400
+
+        result = asyncio.run(app.geofence_service.check_position(drone_id, position))
+        return jsonify(result)
+
+    @app.route('/api/geofence/violations/<zone_name>', methods=['GET'])
+    @error_handler
+    def geofence_violations(zone_name):
+        """Get violation history for a zone."""
+        limit = request.args.get('limit', 100, type=int)
+        result = asyncio.run(app.geofence_service.get_violations(zone_name, limit))
         return jsonify(result)
 
     # =====================================================================
