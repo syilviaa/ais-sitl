@@ -9,9 +9,11 @@ Provides:
 """
 
 import asyncio
+import inspect
+import json
 import logging
+import time
 from typing import Optional, Callable, Set
-from collections import deque
 
 from src.telemetry import TelemetryCollector
 
@@ -31,6 +33,8 @@ class TelemetryServiceAPI:
         self.clients: Set[str] = set()
         self.broadcast_callback: Optional[Callable] = None
         self._running = False
+        self._stop_event = asyncio.Event()
+        self._last_broadcast_time = 0.0
 
     async def start(self):
         """Start telemetry collection."""
@@ -41,18 +45,12 @@ class TelemetryServiceAPI:
             logger.info("Starting telemetry service...")
             self._running = True
 
-            # Start collector
-            await self.collector.start()
-
             # Setup callback for broadcasting
             async def on_telemetry(snapshot):
-                if self.broadcast_callback:
-                    try:
-                        await self.broadcast_callback(snapshot)
-                    except Exception as e:
-                        logger.error(f"Broadcast error: {e}")
+                await self._broadcast_snapshot(snapshot)
 
             self.collector.on_telemetry(on_telemetry)
+            await self.collector.start()
             logger.info("✅ Telemetry service started")
 
         except Exception as e:
@@ -65,10 +63,16 @@ class TelemetryServiceAPI:
         try:
             logger.info("Stopping telemetry service...")
             self._running = False
+            self._stop_event.set()
             await self.collector.stop()
             logger.info("✅ Telemetry service stopped")
         except Exception as e:
             logger.error(f"Stop error: {e}")
+
+    async def run_forever(self):
+        """Keep the collector on a dedicated background event loop."""
+        await self.start()
+        await self._stop_event.wait()
 
     async def get_latest(self) -> dict:
         """Get latest telemetry snapshot."""
@@ -110,21 +114,44 @@ class TelemetryServiceAPI:
     def register_client(self, client_id: str):
         """Register WebSocket client."""
         self.clients.add(client_id)
-        logger.info(f"Client registered: {client_id} (total: {len(self.clients)})")
+        logger.info(
+            f"Client registered: {client_id} (total: {len(self.clients)})"
+        )
 
     def unregister_client(self, client_id: str):
         """Unregister WebSocket client."""
         self.clients.discard(client_id)
-        logger.info(f"Client unregistered: {client_id} (total: {len(self.clients)})")
+        logger.info(
+            f"Client unregistered: {client_id} (total: {len(self.clients)})"
+        )
 
     def has_clients(self) -> bool:
         """Check if there are connected clients."""
         return len(self.clients) > 0
 
-    async def set_broadcast_callback(self, callback: Callable):
+    def set_broadcast_callback(self, callback: Callable):
         """Set callback for telemetry broadcast."""
         self.broadcast_callback = callback
 
     def is_running(self) -> bool:
         """Check if telemetry service is running."""
         return self._running
+
+    async def _broadcast_snapshot(self, snapshot) -> None:
+        """Broadcast a received snapshot at no more than 10 Hz."""
+        if not self.broadcast_callback or not self.has_clients():
+            return
+        now = time.monotonic()
+        if now - self._last_broadcast_time < 0.1:
+            return
+        payload = (
+            snapshot if isinstance(snapshot, dict) else snapshot.to_dict()
+        )
+        try:
+            payload = json.loads(json.dumps(payload, allow_nan=False))
+            result = self.broadcast_callback(payload)
+            if inspect.isawaitable(result):
+                await result
+            self._last_broadcast_time = now
+        except (TypeError, ValueError, AttributeError) as error:
+            logger.error("Telemetry broadcast skipped: %s", error)

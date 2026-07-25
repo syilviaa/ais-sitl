@@ -18,7 +18,7 @@ import asyncio
 import logging
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask_socketio import SocketIO, emit
 from functools import wraps
 
 from src.backend.services import (
@@ -73,6 +73,24 @@ def create_app(config=None):
     app.failsafe_service = None
     app.clients = set()
 
+    def broadcast_telemetry(payload):
+        """Send a collector snapshot to explicitly subscribed clients only."""
+        service = app.telemetry_service
+        if not service:
+            return
+        for client_id in tuple(service.clients):
+            socketio.emit('telemetry', payload, to=client_id)
+
+    def configure_telemetry_service(service):
+        """Attach the single service instance to the SocketIO broadcaster."""
+        service.set_broadcast_callback(broadcast_telemetry)
+
+    app.configure_telemetry_service = configure_telemetry_service
+
+    def run_telemetry_service(service):
+        """Run the existing async collector in one SocketIO background task."""
+        asyncio.run(service.run_forever())
+
     # =====================================================================
     # HEALTH CHECK
     # =====================================================================
@@ -100,9 +118,15 @@ def create_app(config=None):
             asyncio.run(app.drone_service.initialize())
 
             # Initialize other services
-            mavsdk_system = app.drone_service.drone._system if app.drone_service.drone else None
+            drone = app.drone_service.drone
+            mavsdk_system = drone._system if drone else None
             app.mission_service = MissionServiceAPI(mavsdk_system)
-            app.telemetry_service = TelemetryServiceAPI(mavsdk_system)
+            if app.telemetry_service is None:
+                app.telemetry_service = TelemetryServiceAPI(mavsdk_system)
+                configure_telemetry_service(app.telemetry_service)
+                socketio.start_background_task(
+                    run_telemetry_service, app.telemetry_service
+                )
             app.failsafe_service = FailsafeServiceAPI(
                 app.drone_service.drone,
                 None  # Will init telemetry separately
@@ -194,10 +218,17 @@ def create_app(config=None):
     @error_handler
     def drone_rtl():
         """Return to launch (RTL)."""
-        reason = request.json.get('reason', 'api_request') if request.json else 'api_request'
+        reason = (
+            request.json.get('reason', 'api_request')
+            if request.json else 'api_request'
+        )
         try:
             asyncio.run(app.drone_service.return_to_launch(reason=reason))
-            return jsonify({"success": True, "message": "RTL initiated", "reason": reason})
+            return jsonify({
+                "success": True,
+                "message": "RTL initiated",
+                "reason": reason,
+            })
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
 
@@ -358,29 +389,47 @@ def create_app(config=None):
     @app.errorhandler(500)
     def internal_error(e):
         logger.error(f'Internal server error: {e}')
-        return jsonify({'error': 'Internal server error', 'success': False}), 500
+        return jsonify({
+            'error': 'Internal server error',
+            'success': False,
+        }), 500
 
     # =====================================================================
     # WEBSOCKET EVENTS
     # =====================================================================
+
+    def announce_connection(client_id):
+        """Emit after the SocketIO connect handshake has completed."""
+        socketio.sleep(0)
+        socketio.emit(
+            'connected',
+            {
+                'message': 'Connected to AIS SITL Dashboard',
+                'client_id': client_id,
+            },
+            to=client_id,
+        )
 
     @socketio.on('connect')
     def on_connect():
         """Handle client connection."""
         client_id = request.sid
         app.clients.add(client_id)
-        logger.info(f"Client connected: {client_id} (total: {len(app.clients)})")
-        emit('connected', {
-            'message': 'Connected to AIS SITL Dashboard',
-            'client_id': client_id,
-        })
+        logger.info(
+            f"Client connected: {client_id} (total: {len(app.clients)})"
+        )
+        socketio.start_background_task(announce_connection, client_id)
 
     @socketio.on('disconnect')
     def on_disconnect():
         """Handle client disconnection."""
         client_id = request.sid
         app.clients.discard(client_id)
-        logger.info(f"Client disconnected: {client_id} (total: {len(app.clients)})")
+        if app.telemetry_service:
+            app.telemetry_service.unregister_client(client_id)
+        logger.info(
+            f"Client disconnected: {client_id} (total: {len(app.clients)})"
+        )
 
     @socketio.on('start_telemetry')
     def on_start_telemetry():
@@ -389,6 +438,10 @@ def create_app(config=None):
         if app.telemetry_service:
             app.telemetry_service.register_client(client_id)
             emit('telemetry_started', {'client_id': client_id})
+        else:
+            emit('telemetry_error', {
+                'message': 'Telemetry service is not initialized',
+            })
 
     @socketio.on('stop_telemetry')
     def on_stop_telemetry():
@@ -397,6 +450,8 @@ def create_app(config=None):
         if app.telemetry_service:
             app.telemetry_service.unregister_client(client_id)
             emit('telemetry_stopped', {'client_id': client_id})
+
+    # TODO: Mission-progress and failsafe events belong to other owners.
 
     return app, socketio
 
