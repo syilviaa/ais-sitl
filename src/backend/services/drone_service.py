@@ -13,7 +13,13 @@ import logging
 import asyncio
 from typing import Optional, Dict, Any
 
-from src.autopilot.plane import Drone, DroneState
+try:
+    from src.autopilot.plane import Drone, DroneState
+    HAS_MAVSDK = True
+except (ImportError, AttributeError):
+    HAS_MAVSDK = False
+    Drone = None
+    DroneState = None
 
 logger = logging.getLogger(__name__)
 

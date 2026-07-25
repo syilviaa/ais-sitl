@@ -8,8 +8,15 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
-from mavsdk import System
-from mavsdk.mission import MissionItem, MissionPlan
+try:
+    from mavsdk import System
+    from mavsdk.mission import MissionItem, MissionPlan
+    HAS_MAVSDK = True
+except ImportError:
+    HAS_MAVSDK = False
+    System = None
+    MissionItem = None
+    MissionPlan = None
 
 
 logger = logging.getLogger(__name__)
