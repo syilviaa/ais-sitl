@@ -13,15 +13,19 @@ Owner: Мерей
 
 import asyncio
 import logging
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, TYPE_CHECKING
 
 from src.models import Waypoint, MissionItem, MissionProgress
+
+if TYPE_CHECKING:
+    from mavsdk import System
 
 try:
     from mavsdk import System
     MAVSDK_AVAILABLE = True
 except ImportError:
     MAVSDK_AVAILABLE = False
+    System = None
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +59,7 @@ class MissionService:
             await asyncio.sleep(1.0)
     """
 
-    def __init__(self, system: Optional[System] = None):
+    def __init__(self, system: Optional["System"] = None):
         """
         Initialize mission service.
 

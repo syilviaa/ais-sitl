@@ -16,17 +16,21 @@ Owner: Мерей
 import asyncio
 import logging
 import time
-from typing import Optional, List, Callable
+from typing import Optional, List, Callable, TYPE_CHECKING
 from collections import deque
 from datetime import datetime
 
 from src.models import TelemetrySnapshot, GPSFixType, FlightMode
+
+if TYPE_CHECKING:
+    from mavsdk import System
 
 try:
     from mavsdk import System
     MAVSDK_AVAILABLE = True
 except ImportError:
     MAVSDK_AVAILABLE = False
+    System = None
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +61,7 @@ class TelemetryCollector:
 
     def __init__(
         self,
-        system: Optional[System] = None,
+        system: Optional["System"] = None,
         rate_hz: float = 10.0,
         history_size: int = 100,
     ):
