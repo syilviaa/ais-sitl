@@ -31,7 +31,7 @@ from src.backend.services.fleet_service import FleetService
 from src.backend.services.recording_service import RecordingService
 from src.backend.services.geofence_service import GeofenceService
 from src.backend.services.metrics_service import MetricsService
-from src.backend.database import SessionLocal
+from src.backend import database
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,13 @@ def error_handler(f):
 
 def create_app(config=None):
     """Create and configure Flask application."""
+    try:
+        database.init_db()
+    except Exception as exc:
+        logger.warning("Database unavailable; persistence disabled: %s", exc)
+
+    session_factory = database.SessionLocal
+
     app = Flask(__name__)
 
     # Configuration
@@ -77,11 +84,11 @@ def create_app(config=None):
     app.telemetry_service = None
     app.failsafe_service = None
     app.fleet_service = FleetService()
-    app.fleet_service.set_database(SessionLocal)
+    app.fleet_service.set_database(session_factory)
     app.recording_service = RecordingService()
-    app.recording_service.set_database(SessionLocal)
+    app.recording_service.set_database(session_factory)
     app.geofence_service = GeofenceService()
-    app.geofence_service.set_database(SessionLocal)
+    app.geofence_service.set_database(session_factory)
     app.metrics_service = MetricsService()
     app.clients = set()
 
