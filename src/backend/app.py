@@ -27,6 +27,8 @@ from src.backend.services import (
     TelemetryServiceAPI,
     FailsafeServiceAPI,
 )
+from src.backend.services.fleet_service import FleetService
+from src.backend.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,8 @@ def create_app(config=None):
     app.mission_service = None
     app.telemetry_service = None
     app.failsafe_service = None
+    app.fleet_service = FleetService()
+    app.fleet_service.set_database(SessionLocal)
     app.clients = set()
 
     def broadcast_telemetry(payload):
@@ -379,6 +383,81 @@ def create_app(config=None):
         return jsonify(events)
 
     # =====================================================================
+    # FLEET ENDPOINTS (VEHA 5)
+    # =====================================================================
+
+    @app.route('/api/fleet/add-drone', methods=['POST'])
+    @error_handler
+    def fleet_add_drone():
+        """Register a new drone in the fleet."""
+        data = request.json or {}
+        name = data.get('name')
+        host = data.get('host', '127.0.0.1')
+        port = data.get('port', 14540)
+
+        if not name:
+            return jsonify({"error": "Drone name required"}), 400
+
+        result = asyncio.run(app.fleet_service.add_drone(name, host, port))
+        return jsonify(result)
+
+    @app.route('/api/fleet/remove-drone/<drone_id>', methods=['DELETE'])
+    @error_handler
+    def fleet_remove_drone(drone_id):
+        """Remove drone from fleet."""
+        result = asyncio.run(app.fleet_service.remove_drone(drone_id))
+        return jsonify(result)
+
+    @app.route('/api/fleet/status', methods=['GET'])
+    @error_handler
+    def fleet_status():
+        """Get status of all drones in fleet."""
+        result = asyncio.run(app.fleet_service.get_fleet_status())
+        return jsonify(result)
+
+    @app.route('/api/fleet/conflicts', methods=['GET'])
+    @error_handler
+    def fleet_conflicts():
+        """Check for airspace conflicts."""
+        result = asyncio.run(app.fleet_service.check_conflicts())
+        return jsonify(result)
+
+    @app.route('/api/fleet/coordinated-takeoff', methods=['POST'])
+    @error_handler
+    def fleet_coordinated_takeoff():
+        """Execute coordinated takeoff for multiple drones."""
+        data = request.json or {}
+        drone_names = data.get('drones', [])
+        altitude = data.get('altitude', 50)
+        delay = data.get('delay', 1.0)
+
+        if not drone_names:
+            return jsonify({"error": "Drone list required"}), 400
+
+        result = asyncio.run(app.fleet_service.coordinated_takeoff(drone_names, altitude, delay))
+        return jsonify(result)
+
+    @app.route('/api/fleet/broadcast', methods=['POST'])
+    @error_handler
+    def fleet_broadcast():
+        """Broadcast command to all drones."""
+        data = request.json or {}
+        command = data.get('command')
+
+        if not command:
+            return jsonify({"error": "Command required"}), 400
+
+        result = asyncio.run(app.fleet_service.broadcast_command(command, data))
+        return jsonify(result)
+
+    @app.route('/api/fleet/emergency-stop', methods=['POST'])
+    @error_handler
+    def fleet_emergency_stop():
+        """Emergency stop all drones."""
+        result = asyncio.run(app.fleet_service.emergency_stop())
+        return jsonify(result)
+
+    # =====================================================================
     # ERROR HANDLERS
     # =====================================================================
 
@@ -450,6 +529,39 @@ def create_app(config=None):
         if app.telemetry_service:
             app.telemetry_service.unregister_client(client_id)
             emit('telemetry_stopped', {'client_id': client_id})
+
+    @socketio.on('fleet_status')
+    def on_fleet_status():
+        """Get fleet status on demand."""
+        try:
+            result = asyncio.run(app.fleet_service.get_fleet_status())
+            emit('fleet_status', result)
+        except Exception as e:
+            logger.error(f"Fleet status error: {e}")
+            emit('fleet_error', {'error': str(e)})
+
+    @socketio.on('start_fleet_monitoring')
+    def on_start_fleet_monitoring():
+        """Start periodic fleet status updates."""
+        client_id = request.sid
+
+        def broadcast_fleet_status():
+            """Periodically broadcast fleet status to all clients."""
+            while True:
+                try:
+                    result = asyncio.run(app.fleet_service.get_fleet_status())
+                    for cid in app.clients:
+                        socketio.emit('fleet_status', result, to=cid)
+                    socketio.sleep(1)
+                except Exception as e:
+                    logger.error(f"Fleet broadcast error: {e}")
+                    socketio.sleep(1)
+
+        if not hasattr(app, '_fleet_monitoring_started'):
+            app._fleet_monitoring_started = True
+            socketio.start_background_task(broadcast_fleet_status)
+
+        emit('fleet_monitoring_started', {'client_id': client_id})
 
     # TODO: Mission-progress and failsafe events belong to other owners.
 
