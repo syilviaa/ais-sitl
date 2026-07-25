@@ -11,6 +11,7 @@ from src.autopilot.plane import (
     DroneState,
     DroneTimeoutError,
     InvalidStateError,
+    MissionValidationError,
 )
 
 
@@ -96,7 +97,11 @@ class FakeTelemetry:
 
 
 class FakeMission:
+    def __init__(self):
+        self.upload_called = False
+
     async def upload_mission(self, plan):
+        self.upload_called = True
         self.plan = plan
 
     async def start_mission(self):
@@ -234,4 +239,31 @@ async def test_telemetry_callback_is_limited_to_ten_hz():
         later - earlier >= 0.09
         for earlier, later in zip(timestamps, timestamps[1:])
     )
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_dangerous_mission_is_rejected_before_mavsdk_upload():
+    """The default validator loads the real project NFZ GeoJSON."""
+    drone = await ready_drone()
+    mission = [(47.3800, 8.5400, 50.0), (47.4100, 8.5700, 50.0)]
+    with pytest.raises(MissionValidationError):
+        await drone.fly_mission(mission)
+    assert not drone._system.mission.upload_called
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mission",
+    [
+        [None, (47.2, 8.0, 50.0)],
+        [(True, 8.5, 50.0), (47.2, 8.0, 50.0)],
+    ],
+)
+async def test_invalid_mission_is_rejected_before_mavsdk_upload(mission):
+    drone = await ready_drone()
+    with pytest.raises(MissionValidationError):
+        await drone.fly_mission(mission)
+    assert not drone._system.mission.upload_called
     await drone.disconnect()

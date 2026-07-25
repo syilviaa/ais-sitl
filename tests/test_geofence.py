@@ -1,111 +1,108 @@
-"""
-Unit tests for geofencing validation.
+"""Tests for the production GeoJSON no-fly-zone validator."""
 
-Tests polygon intersection, mission validation, and runtime NFZ breach detection.
-"""
+import json
 
 import pytest
-import json
-from shapely.geometry import Point, Polygon, LineString
+
+from src.autopilot.geofence import GeofenceValidator, NoFlyZone
 
 
-class GeofenceValidator:
-    """Geofence validation for No-Fly Zones."""
-
-    def __init__(self):
-        self.zones = []
-
-    def load_nfz_zones(self, filepath: str):
-        """Load GeoJSON NFZ zones."""
-        with open(filepath) as f:
-            data = json.load(f)
-            self.zones = data.get("features", [])
-
-    def validate_mission(self, waypoints: list) -> bool:
-        """Check if mission waypoints cross any NFZ."""
-        for i in range(len(waypoints) - 1):
-            wp1 = waypoints[i]
-            wp2 = waypoints[i + 1]
-
-            for zone in self.zones:
-                if not zone["properties"].get("active", True):
-                    continue
-
-                coords = zone["geometry"]["coordinates"][0]
-                poly = Polygon(coords)
-
-                # Check segment intersection
-                segment = LineString([(wp1[1], wp1[0]), (wp2[1], wp2[0])])
-                if poly.intersects(segment):
-                    return False
-
-        return True
-
-    def check_point_in_nfz(self, lat: float, lon: float) -> bool:
-        """Check if single point is in NFZ."""
-        for zone in self.zones:
-            if not zone["properties"].get("active", True):
-                continue
-
-            coords = zone["geometry"]["coordinates"][0]
-            poly = Polygon(coords)
-            point = Point(lon, lat)
-
-            if poly.contains(point):
-                return True
-
-        return False
+@pytest.fixture
+def validator():
+    instance = GeofenceValidator()
+    assert instance.load_nfz_zones()
+    return instance
 
 
-# Tests
+def test_loads_geojson_zones(validator):
+    """The project GeoJSON is parsed into named NoFlyZone objects."""
+    assert validator.loaded
+    assert all(isinstance(zone, NoFlyZone) for zone in validator.zones)
+    assert len(validator.zones) == 3
+    assert len(validator.active_zones) == 2
 
-def test_geofence_load_zones():
-    """Test loading GeoJSON zones."""
+
+def test_point_inside_active_zone_is_blocked(validator):
+    blocked, name = validator.check_point_in_nfz(47.3990, 8.5520, 50.0)
+    assert blocked
+    assert name == "Airport Control Zone"
+
+
+def test_point_on_active_zone_boundary_is_blocked(validator):
+    blocked, name = validator.check_point_in_nfz(47.3977, 8.5520, 50.0)
+    assert blocked
+    assert name == "Airport Control Zone"
+
+
+def test_safe_route_is_allowed(validator):
+    mission = [(47.2000, 8.0000, 50.0), (47.2200, 8.0200, 50.0)]
+    assert validator.validate_mission(mission)
+
+
+def test_route_crossing_active_nfz_is_blocked(validator):
+    mission = [(47.3800, 8.5400, 50.0), (47.4100, 8.5700, 50.0)]
+    assert not validator.validate_mission(mission)
+
+
+def test_empty_mission_is_rejected(validator):
+    assert not validator.validate_mission([])
+
+
+@pytest.mark.parametrize(
+    "mission",
+    [
+        [None],
+        [(True, 8.5, 50.0)],
+        ["not-a-waypoint"],
+    ],
+)
+def test_invalid_waypoint_is_rejected_without_exception(validator, mission):
+    assert not validator.validate_mission(mission)
+
+
+def test_one_dangerous_waypoint_is_rejected(validator):
+    assert not validator.validate_mission([(47.3990, 8.5520, 50.0)])
+
+
+def test_altitude_band_is_respected(validator):
+    assert not validator.check_point_in_nfz(47.3990, 8.5520, 151.0)[0]
+    assert validator.check_point_in_nfz(47.3990, 8.5520, 150.0)[0]
+
+
+def test_failed_load_blocks_validation(tmp_path):
     validator = GeofenceValidator()
-    validator.load_nfz_zones("config/nfz_zones.geojson")
-    assert len(validator.zones) > 0
+    assert not validator.load_nfz_zones(str(tmp_path / "missing.geojson"))
+    assert not validator.validate_mission([(47.2, 8.0, 50.0)])
 
 
-def test_geofence_point_in_zone():
-    """Test point-in-zone detection."""
+def test_custom_inactive_zone_does_not_block(tmp_path):
+    path = tmp_path / "zones.geojson"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"name": "disabled", "active": False},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [8.0, 47.0],
+                                    [8.1, 47.0],
+                                    [8.1, 47.1],
+                                    [8.0, 47.1],
+                                    [8.0, 47.0],
+                                ]
+                            ],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     validator = GeofenceValidator()
-    validator.load_nfz_zones("config/nfz_zones.geojson")
-
-    # Point inside first zone (Zurich Airport)
-    assert validator.check_point_in_nfz(47.3990, 8.5520) == True
-
-    # Point outside all zones
-    assert validator.check_point_in_nfz(47.0000, 8.0000) == False
-
-
-def test_geofence_mission_valid():
-    """Test valid mission (avoids NFZ)."""
-    validator = GeofenceValidator()
-    validator.load_nfz_zones("config/nfz_zones.geojson")
-
-    # Mission far from zones
-    waypoints = [
-        (47.2000, 8.0000, 50.0),
-        (47.2100, 8.0100, 50.0),
-        (47.2200, 8.0200, 50.0),
-    ]
-
-    assert validator.validate_mission(waypoints) == True
-
-
-def test_geofence_mission_crosses_nfz():
-    """Test mission that crosses NFZ."""
-    validator = GeofenceValidator()
-    validator.load_nfz_zones("config/nfz_zones.geojson")
-
-    # Mission passes through Zurich Airport zone
-    waypoints = [
-        (47.3800, 8.5400, 50.0),
-        (47.4100, 8.5700, 50.0),  # Crosses zone
-    ]
-
-    assert validator.validate_mission(waypoints) == False
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    assert validator.load_nfz_zones(str(path))
+    assert validator.validate_mission([(47.05, 8.05, 20.0)])

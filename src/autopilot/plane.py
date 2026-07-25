@@ -327,6 +327,14 @@ class Drone:
             from .geofence import GeofenceValidator
 
             validator = GeofenceValidator()
+            if not validator.load_nfz_zones():
+                raise MissionValidationError(
+                    "NFZ data could not be loaded; mission rejected"
+                )
+        elif getattr(validator, "loaded", True) is False:
+            raise MissionValidationError(
+                "NFZ data is unavailable; mission rejected"
+            )
         result = validator.validate_mission(waypoints)
         if inspect.isawaitable(result):
             result = await result
@@ -513,21 +521,37 @@ class Drone:
     def _validate_waypoints(
         waypoints: List[Tuple[float, float, float]]
     ) -> None:
+        if not isinstance(waypoints, (list, tuple)):
+            raise MissionValidationError(
+                "Mission waypoints must be a list or tuple"
+            )
         if len(waypoints) < 2:
             raise MissionValidationError(
                 "Mission requires at least two waypoints"
             )
         for waypoint in waypoints:
+            if not isinstance(waypoint, (list, tuple)):
+                raise MissionValidationError(
+                    "Each waypoint must be a list or tuple"
+                )
             if len(waypoint) != 3:
                 raise MissionValidationError(
                     "Each waypoint must be (lat, lon, altitude)"
                 )
             lat, lon, altitude = waypoint
+            if any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                for value in waypoint
+            ):
+                raise MissionValidationError(
+                    "Waypoint coordinates must be numeric values"
+                )
             if not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
                 raise MissionValidationError(
                     "Waypoint latitude or longitude is invalid"
                 )
-            if not isinstance(altitude, (float, int)) or altitude < 0:
+            if altitude < 0:
                 raise MissionValidationError("Waypoint altitude is invalid")
 
 
