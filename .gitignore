@@ -69,3 +69,4 @@ cache/
 # Large files (if needed)
 *.bag
 *.bagindex
+node_modules/
