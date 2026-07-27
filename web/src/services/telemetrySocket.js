@@ -18,6 +18,16 @@ let lastUpdateAt = 0
 let pendingTelemetry = null
 let updateTimer = null
 
+function backendUrl(explicit) {
+  const raw = explicit || import.meta.env.VITE_API_URL || ''
+  if (raw) return raw.replace(/\/api\/?$/, '').replace(/\/$/, '')
+  // Vite dev: use proxy on same origin
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    return window.location.origin
+  }
+  return 'http://127.0.0.1:5000'
+}
+
 function deliverTelemetry() {
   updateTimer = null
   if (closed || !pendingTelemetry) return
@@ -36,23 +46,44 @@ function scheduleDelivery() {
   }
 }
 
-/** url без /api — например http://127.0.0.1:5000 */
+function requestTelemetryStart() {
+  if (socketInstance?.connected) {
+    socketInstance.emit('start_telemetry')
+  }
+}
+
+/** Подключить Socket.IO. url без /api — например http://127.0.0.1:5000 */
 export function connectTelemetry(url) {
   disconnectTelemetry()
 
-  const backendUrl = url || import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000'
+  const urlBase = backendUrl(url)
   closed = false
   setConnectionStatus('reconnecting')
 
-  const socket = io(backendUrl, {
+  const socket = io(urlBase, {
     autoConnect: true,
     reconnection: true,
+    transports: ['websocket', 'polling'],
   })
   socketInstance = socket
 
+  // Transport-level connect (Socket.IO)
+  socket.on('connect', () => {
+    setConnectionStatus('connected')
+    socket.emit('start_telemetry')
+  })
+
+  // Backend handshake event (after connect)
   socket.on('connected', () => {
     setConnectionStatus('connected')
     socket.emit('start_telemetry')
+  })
+
+  socket.on('telemetry_started', (info) => {
+    setConnectionStatus('connected')
+    if (info?.pending) {
+      console.info('telemetry pending:', info.message)
+    }
   })
 
   socket.on('telemetry', (payload) => {
@@ -61,8 +92,13 @@ export function connectTelemetry(url) {
   })
 
   socket.on('telemetry_error', (error) => {
+    const msg = error?.message || ''
+    if (msg.toLowerCase().includes('not initialized')) {
+      setConnectionStatus('connected')
+      return
+    }
     setConnectionStatus('error')
-    console.error('telemetry_error', error?.message || error)
+    console.error('telemetry_error', msg || error)
   })
 
   socket.on('connect_error', (error) => {
@@ -97,6 +133,8 @@ export function disconnectTelemetry() {
   setConnectionStatus('disconnected')
 }
 
+export { requestTelemetryStart }
+
 /** Совместимость с App.vue ветки feat/dashboard-websocket-client */
 export function createTelemetrySocket({ url, onStatus, onTelemetry: onTelemetryCb, onError }) {
   const statusUnsub = onStatus ? onConnectionStatus(onStatus) : null
@@ -113,9 +151,7 @@ export function createTelemetrySocket({ url, onStatus, onTelemetry: onTelemetryC
     connect() {
       if (!socket.connected) socket.connect()
     },
-    start() {
-      if (socket.connected) socket.emit('start_telemetry')
-    },
+    start: requestTelemetryStart,
     close() {
       statusUnsub?.()
       telemetryUnsub?.()

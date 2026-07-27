@@ -150,7 +150,8 @@ class Drone:
         self._command_timeout_s = command_timeout_s
         self._connected = False
         self._state = DroneState.DISCONNECTED
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
         self._telemetry = TelemetrySnapshot()
         self._telemetry_callback: Optional[
             Callable[[Dict[str, Any]], Any]
@@ -159,6 +160,14 @@ class Drone:
         self._callback_task: Optional[asyncio.Task] = None
         self._mission_task: Optional[asyncio.Task] = None
         self._mission_progress = {"current": 0, "total": 0}
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Bind lock to the current running event loop (Flask uses asyncio.run per request)."""
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
 
     @property
     def state(self) -> DroneState:
@@ -171,7 +180,7 @@ class Drone:
 
     async def connect(self, timeout_s: float = 10.0) -> bool:
         """Connect to local PX4 SITL over a UDP input endpoint."""
-        async with self._lock:
+        async with self._get_lock():
             if self._connected:
                 return True
             address = f"udpin://0.0.0.0:{self.port}"
@@ -198,7 +207,7 @@ class Drone:
 
     async def disconnect(self) -> None:
         """Stop local subscriptions and mark the controller disconnected."""
-        async with self._lock:
+        async with self._get_lock():
             await self.unsubscribe_telemetry()
             self._cancel_task(self._mission_task)
             self._mission_task = None
@@ -230,7 +239,7 @@ class Drone:
 
     async def arm(self, timeout_s: Optional[float] = None) -> bool:
         """Arm motors and wait until telemetry confirms the armed state."""
-        async with self._lock:
+        async with self._get_lock():
             self._require_state(DroneState.READY)
             await self._system.action.arm()
             await self._wait_for_stream(
@@ -243,7 +252,7 @@ class Drone:
 
     async def disarm(self, timeout_s: Optional[float] = None) -> bool:
         """Disarm motors and wait for telemetry confirmation."""
-        async with self._lock:
+        async with self._get_lock():
             self._require_connected()
             await self._system.action.disarm()
             await self._wait_for_stream(
@@ -268,7 +277,7 @@ class Drone:
             <= self.MAX_TAKEOFF_ALTITUDE_M
         ):
             raise ValueError("altitude_m must be between 0.5 and 120 metres")
-        async with self._lock:
+        async with self._get_lock():
             self._require_state(DroneState.ARMED)
             await self._system.action.set_takeoff_altitude(float(altitude_m))
             await self._system.action.takeoff()
@@ -289,7 +298,7 @@ class Drone:
 
     async def land(self, timeout_s: Optional[float] = None) -> bool:
         """Land and wait for PX4 telemetry to report motors disarmed."""
-        async with self._lock:
+        async with self._get_lock():
             self._require_connected()
             self._state = DroneState.LANDING
             await self._system.action.land()
@@ -309,7 +318,7 @@ class Drone:
 
     async def hold_position(self) -> bool:
         """Command PX4 to hold its current position."""
-        async with self._lock:
+        async with self._get_lock():
             self._require_state(DroneState.AIRBORNE, DroneState.HOLDING)
             await self._system.action.hold()
             self._state = DroneState.HOLDING
@@ -317,7 +326,7 @@ class Drone:
 
     async def return_to_launch(self, reason: str = "operator request") -> bool:
         """Request PX4 return-to-launch; failsafe policy remains external."""
-        async with self._lock:
+        async with self._get_lock():
             self._require_state(DroneState.AIRBORNE, DroneState.HOLDING)
             logger.warning("Return to launch requested: %s", reason)
             await self._system.action.return_to_launch()

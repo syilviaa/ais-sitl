@@ -172,7 +172,7 @@
 import MapComponent from './components/MapComponent.vue'
 import { DEFAULT_WAYPOINTS } from './config/trainingZone.js'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
-import { connectTelemetry, disconnectTelemetry } from './services/telemetrySocket.js'
+import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
 
 const API_BASE = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000'}/api`
 
@@ -321,6 +321,7 @@ export default {
             body: JSON.stringify({ timeout: 30 }),
           })
           this.droneReady = true
+          requestTelemetryStart()
           this.addEvent('success', 'SITL ready — Astana home')
           if (this.$refs.mapComponent) this.$refs.mapComponent.clearTrail()
         } else {

@@ -80,6 +80,7 @@ def main():
             port=5000,
             debug=True,
             use_reloader=True,
+            allow_unsafe_werkzeug=True,
         )
 
     except KeyboardInterrupt:
