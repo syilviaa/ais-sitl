@@ -128,16 +128,22 @@ def create_app(config=None):
         """Run failsafe monitor on the shared MAVSDK event loop."""
         schedule_coroutine(service.start())
 
+    app._geofence_validator = GeofenceValidator()
+    app._geofence_validator.load_nfz_zones()
+
     async def geofence_telemetry_guard(snapshot):
         """Hold position if drone enters an active NFZ (TZ §2.3)."""
         if snapshot is None or not app.drone_service.drone:
             return
-        validator = GeofenceValidator()
-        if not validator.loaded:
-            validator.load_nfz_zones()
-        lat = getattr(snapshot, "lat", None) or snapshot.get("lat")
-        lon = getattr(snapshot, "lon", None) or snapshot.get("lon")
-        alt = getattr(snapshot, "altitude_m", None) or snapshot.get("alt", 0)
+        validator = app._geofence_validator
+        if isinstance(snapshot, dict):
+            lat = snapshot.get("lat")
+            lon = snapshot.get("lon")
+            alt = snapshot.get("alt", snapshot.get("altitude_m", 0))
+        else:
+            lat = getattr(snapshot, "lat", None)
+            lon = getattr(snapshot, "lon", None)
+            alt = getattr(snapshot, "altitude_m", getattr(snapshot, "alt", 0))
         if lat is None:
             return
         in_nfz, zone_name = validator.check_point_in_nfz(lat, lon, alt)
@@ -180,6 +186,7 @@ def create_app(config=None):
                     logger.warning("Failsafe not started: %s", fs_exc)
 
         if app.telemetry_service:
+            app.telemetry_service.collector._battery_sim.reset(100.0)
             for client_id in list(app.pending_telemetry_clients):
                 app.telemetry_service.register_client(client_id)
             app.pending_telemetry_clients.clear()
@@ -212,6 +219,7 @@ def create_app(config=None):
     @error_handler
     def health():
         """Health check endpoint."""
+        nfz_count = len(app.geofence_service.zones_cache) if app.geofence_service else 0
         return jsonify({
             'status': 'ok',
             'version': '0.1.0',
@@ -221,14 +229,43 @@ def create_app(config=None):
             'mavsdk_available': MAVSDK_AVAILABLE,
             'mavsdk_error': None if MAVSDK_AVAILABLE else IMPORT_ERROR,
             'mavsdk_server_available': mavsdk_server_available(),
+            'geofence_zones': nfz_count,
             'video': video_relay.status(),
         })
+
+    @app.route('/api/sitl/status', methods=['GET'])
+    @error_handler
+    def sitl_status():
+        """PX4 Gazebo container + MAVLink readiness (before Connect SITL)."""
+        from src.sitl_status import check_sitl_ready
+        return jsonify(check_sitl_ready())
+
+    @app.route('/api/mavlink/probe', methods=['GET'])
+    @error_handler
+    def mavlink_probe():
+        """MAVLink UDP probe (pymavlink, TZ §2)."""
+        from src.mavlink_probe import probe_mavlink_udp
+        port = request.args.get('port', 14550, type=int)
+        timeout = request.args.get('timeout', 1.0, type=float)
+        return jsonify(probe_mavlink_udp(port=port, timeout_s=timeout))
 
     @app.route('/api/video/status', methods=['GET'])
     @error_handler
     def video_status():
         """Gazebo camera relay status."""
+        video_relay.ensure_running()
         return jsonify(video_relay.status())
+
+    @app.route('/api/video/snapshot', methods=['GET'])
+    def video_snapshot():
+        """Single JPEG frame (works reliably in browser vs MJPEG stream)."""
+        if not video_relay.gstreamer_available:
+            return jsonify({'error': 'GStreamer не установлен'}), 503
+        return Response(
+            video_relay.get_snapshot_jpeg(),
+            mimetype='image/jpeg',
+            headers={'Cache-Control': 'no-store'},
+        )
 
     @app.route('/api/video/mjpeg', methods=['GET'])
     def video_mjpeg():
@@ -266,6 +303,22 @@ def create_app(config=None):
             else:
                 if not mavsdk_server_available():
                     raise RuntimeError(MavsdkServerHint)
+
+                from src.sitl_status import check_sitl_ready
+                sitl = check_sitl_ready()
+                if not sitl["ready"]:
+                    hint_text = " ".join(sitl["hints"]) or (
+                        "Start PX4 SITL: ./scripts/start-px4-gazebo.sh, "
+                        "wait ~30s, then Connect."
+                    )
+                    return jsonify({
+                        "success": False,
+                        "error": "PX4 SITL not ready",
+                        "error_type": "SitlNotReady",
+                        "hint": hint_text,
+                        "sitl": sitl,
+                    }), 503
+
                 run_async(
                     app.drone_service.initialize(
                         host=host,

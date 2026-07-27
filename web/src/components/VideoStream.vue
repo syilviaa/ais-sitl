@@ -61,8 +61,11 @@ export default {
   },
   watch: {
     active(val) {
-      if (val && !this.useRealVideo) this.startSynthetic()
-      else if (!val) this.stopSynthetic()
+      if (val) {
+        this.checkVideoStatus()
+      } else {
+        this.stopSynthetic()
+      }
     },
     telemetry: {
       deep: true,
@@ -91,13 +94,15 @@ export default {
         if (!res.ok) return
         const data = await res.json()
         this.gazeboAvailable = Boolean(data.gstreamer_available)
-        const hasUdp = (data.udp_packets_sample || 0) > 0
-        if (data.gstreamer_available && (hasUdp || data.relay_running)) {
+        if (data.gstreamer_available) {
           this.useRealVideo = true
           this.videoError = false
+          this.stopSynthetic()
+          return
         }
+        if (this.active && !this.useRealVideo) this.startSynthetic()
       } catch {
-        /* backend без video endpoint — только синт. FPV */
+        if (this.active && !this.useRealVideo) this.startSynthetic()
       }
     },
     onVideoLoad() {

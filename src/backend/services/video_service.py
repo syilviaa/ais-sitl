@@ -19,6 +19,11 @@ EOI = b"\xff\xd9"
 
 def find_gst_launch() -> Optional[str]:
     """Locate gst-launch-1.0 binary."""
+    path_env = os.environ.get("PATH", "")
+    extra_paths = "/opt/homebrew/bin:/usr/local/bin"
+    if extra_paths not in path_env:
+        os.environ["PATH"] = f"{extra_paths}:{path_env}"
+
     for candidate in (
         os.environ.get("GST_LAUNCH"),
         shutil.which("gst-launch-1.0"),
@@ -66,12 +71,19 @@ class VideoRelay:
         self._last_frame_at = 0.0
         self._error: Optional[str] = None
 
+    def _ensure_gst(self) -> None:
+        """Re-discover gst-launch after brew install without backend restart."""
+        if self._gst is None:
+            self._gst = find_gst_launch()
+
     @property
     def gstreamer_available(self) -> bool:
+        self._ensure_gst()
         return self._gst is not None
 
     def status(self) -> dict:
-        packets = probe_udp_port(self.port, seconds=0.5)
+        self._ensure_gst()
+        packets = -1 if self._running else probe_udp_port(self.port, seconds=0.5)
         with self._lock:
             has_frame = self._latest is not None
             age = time.time() - self._last_frame_at if has_frame else None
@@ -89,6 +101,7 @@ class VideoRelay:
     def start(self) -> bool:
         if self._running:
             return True
+        self._ensure_gst()
         if not self._gst:
             self._error = (
                 "GStreamer не установлен. "
@@ -99,10 +112,11 @@ class VideoRelay:
 
         args = [
             self._gst,
-            "-q",
+            "-e",
             "udpsrc",
             f"port={self.port}",
-            "caps=application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264",
+            "do-timestamp=true",
+            "caps=application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264,payload=(int)96",
             "!",
             "rtph264depay",
             "!",
@@ -113,9 +127,14 @@ class VideoRelay:
             "jpegenc",
             "quality=85",
             "!",
+            "queue",
+            "max-size-buffers=2",
+            "leaky=downstream",
+            "!",
             "fdsink",
             "fd=1",
             "sync=false",
+            "async=false",
         ]
         try:
             self._proc = subprocess.Popen(
@@ -131,6 +150,7 @@ class VideoRelay:
         self._error = None
         self._thread = threading.Thread(target=self._read_loop, daemon=True)
         self._thread.start()
+        threading.Thread(target=self._stderr_loop, daemon=True).start()
         logger.info("Video relay started on UDP %s", self.port)
         return True
 
@@ -173,9 +193,29 @@ class VideoRelay:
         finally:
             self._running = False
 
+    def _stderr_loop(self) -> None:
+        assert self._proc and self._proc.stderr
+        try:
+            for line in self._proc.stderr:
+                text = line.decode("utf-8", errors="replace").strip()
+                if text and "ERROR" in text.upper():
+                    logger.warning("gst-launch: %s", text)
+                    self._error = text
+        except Exception:
+            pass
+
     def get_latest_frame(self) -> Optional[bytes]:
         with self._lock:
             return self._latest
+
+    def ensure_running(self) -> bool:
+        """Start relay if GStreamer available."""
+        return self.start()
+
+    def get_snapshot_jpeg(self) -> bytes:
+        """Latest JPEG frame or placeholder."""
+        self.ensure_running()
+        return self.get_latest_frame() or self._make_placeholder_jpeg()
 
     def mjpeg_generator(self) -> Generator[bytes, None, None]:
         """Yield multipart MJPEG chunks for Flask Response."""

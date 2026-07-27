@@ -8,8 +8,10 @@ Provides:
 - Real-time boundary monitoring
 """
 
+import json
 import logging
 import uuid
+from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -17,6 +19,10 @@ from src.backend.services.geofence_monitor import GeofenceMonitor
 from src.backend.models import NoFlyZone
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_NFZ_GEOJSON = (
+    Path(__file__).resolve().parents[3] / "config" / "nfz_zones.geojson"
+)
 
 
 class GeofenceService:
@@ -32,6 +38,49 @@ class GeofenceService:
         """Set database session factory."""
         self._db = session_factory
         self._load_zones_from_db()
+        if not self.zones_cache:
+            self.load_from_geojson()
+
+    def load_from_geojson(self, filepath: Optional[str] = None) -> int:
+        """Load NFZ zones from GeoJSON file into cache and monitor (TZ §2.3)."""
+        path = Path(filepath) if filepath else DEFAULT_NFZ_GEOJSON
+        try:
+            with path.open(encoding="utf-8") as source:
+                data = json.load(source)
+        except OSError as exc:
+            logger.error("Failed to read NFZ GeoJSON %s: %s", path, exc)
+            return 0
+
+        loaded = 0
+        for feature in data.get("features", []):
+            props = feature.get("properties") or {}
+            geometry = feature.get("geometry") or {}
+            if geometry.get("type") != "Polygon":
+                continue
+            rings = geometry.get("coordinates") or []
+            if not rings:
+                continue
+            # GeoJSON: [lon, lat] → monitor expects list of {lat, lon}
+            polygon = [
+                {"lat": pt[1], "lon": pt[0]}
+                for pt in rings[0]
+            ]
+            name = props.get("name") or f"zone_{loaded}"
+            zone_dict = {
+                "id": str(uuid.uuid4()),
+                "name": name,
+                "polygon": polygon,
+                "altitude_min": float(props.get("min_altitude", 0.0)),
+                "altitude_max": props.get("max_altitude"),
+                "active": bool(props.get("active", True)),
+            }
+            self.zones_cache[name] = zone_dict
+            self.monitor.register_zone(name, zone_dict)
+            loaded += 1
+
+        if loaded:
+            logger.info("✅ Loaded %d geofence zones from %s", loaded, path.name)
+        return loaded
 
     def _load_zones_from_db(self):
         """Load all active zones from database."""
@@ -55,7 +104,7 @@ class GeofenceService:
                     self.zones_cache[zone.name] = zone_dict
                     self.monitor.register_zone(zone.name, zone_dict)
 
-                logger.info(f"✅ Loaded {len(self.zones_cache)} geofence zones")
+                logger.info(f"✅ Loaded {len(self.zones_cache)} geofence zones from database")
             finally:
                 session.close()
         except Exception as e:

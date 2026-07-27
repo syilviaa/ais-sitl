@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH:-}"
+
 if [[ ! -d venv ]] || [[ ! -f venv/bin/python ]]; then
   chmod +x scripts/setup-dev.sh
   ./scripts/setup-dev.sh
@@ -15,11 +17,32 @@ if [[ -z "${PORT:-}" ]] && [[ "$(uname -s)" == "Darwin" ]]; then
 fi
 PORT="${PORT:-5000}"
 
+# Free stale mavsdk_server (orphaned after failed connect / reloader)
+if command -v pgrep >/dev/null 2>&1; then
+  STALE_MAVSDK="$(pgrep -f '[m]avsdk_server' 2>/dev/null || true)"
+  if [[ -n "${STALE_MAVSDK}" ]] && ! pgrep -f "${ROOT}/venv/bin/python run_backend.py" >/dev/null 2>&1; then
+    echo "Stopping stale mavsdk_server..."
+    pkill -f '[m]avsdk_server' 2>/dev/null || true
+    sleep 1
+  fi
+fi
+
 # Stop stale backend from a previous run (same project)
 if pgrep -f "${ROOT}/venv/bin/python run_backend.py" >/dev/null 2>&1; then
   echo "Stopping previous backend..."
   pkill -f "${ROOT}/venv/bin/python run_backend.py" 2>/dev/null || true
   sleep 1
+fi
+
+# Free the listen port (another Flask/reloader may still hold it)
+if command -v lsof >/dev/null 2>&1; then
+  PORT_PIDS="$(lsof -ti ":${PORT}" 2>/dev/null || true)"
+  if [[ -n "${PORT_PIDS}" ]]; then
+    echo "Freeing port ${PORT}..."
+    # shellcheck disable=SC2086
+    kill -9 ${PORT_PIDS} 2>/dev/null || true
+    sleep 1
+  fi
 fi
 
 # Warn if not Python 3.11

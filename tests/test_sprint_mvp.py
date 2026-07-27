@@ -63,9 +63,11 @@ class TestTelemetryLatency:
     """TZ §2.2 — latency tracking."""
 
     def test_api_dict_includes_latency(self):
-        snap = TelemetrySnapshot(lat=51.1694, lon=71.4491, latency_ms=12.5)
+        snap = TelemetrySnapshot(lat=51.1694, lon=71.4491, latency_ms=12.5, vz=-2.5)
         data = snap.to_api_dict()
         assert data["latency_ms"] == 12.5
+        assert data["ground_speed_m_s"] == 0.0
+        assert data["vertical_speed_m_s"] == 2.5
         assert "lat" in data
         assert "battery" in data
 

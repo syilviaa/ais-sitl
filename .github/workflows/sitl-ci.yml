@@ -2,9 +2,9 @@ name: PX4 SITL CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop, feat/veha5-multidrone ]
+    branches: [ main, develop, feat/veha5-multidrone, feat/final-dashboard-integration, feat/dashboard-kz-ui ]
   pull_request:
-    branches: [ main, develop, feat/veha5-multidrone ]
+    branches: [ main, develop, feat/veha5-multidrone, feat/final-dashboard-integration, feat/dashboard-kz-ui ]
 
 env:
   REGISTRY: ghcr.io
@@ -103,7 +103,10 @@ jobs:
       - name: Check Python code style
         run: |
           pip install -r requirements.txt
-          find . -name "*.py" -type f | grep -v __pycache__ | grep -v node_modules | xargs flake8 --max-line-length=120 --exclude=venv || true
+          find ./src ./tests -name "*.py" -type f | xargs flake8 --max-line-length=120 --exclude=venv --count --statistics
+
+      - name: E2E sprint API script (if backend not required)
+        run: echo "E2E live script: scripts/e2e-sprint-demo.sh (run against running backend)"
 
   backend-tests:
     name: Backend Unit Tests (MVP)

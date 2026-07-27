@@ -158,9 +158,10 @@ class MissionServiceAPI:
                     "error": None,
                 }
             else:
+                detail = getattr(self.service, "_last_upload_error", None)
                 return {
                     "success": False,
-                    "error": "Upload failed",
+                    "error": detail or "Upload failed",
                     "mission_id": None,
                 }
 

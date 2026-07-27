@@ -169,7 +169,6 @@
 <script>
 import MapComponent from './components/MapComponent.vue'
 import VideoStream from './components/VideoStream.vue'
-import { DEFAULT_WAYPOINTS } from './config/trainingZone.js'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
 import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
 
@@ -208,7 +207,7 @@ export default {
       missionRunning: false,
       missionBlockReason: null,
       missionProgress: { current: 0, total: 0, percent: 0 },
-      waypoints: DEFAULT_WAYPOINTS.map((wp) => ({ ...wp })),
+      waypoints: [],
       failsafe: { running: false, battery_warning: false, battery_critical: false },
       rtlReason: null,
       events: [],
@@ -349,7 +348,9 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ altitude: 50 }),
         })
+        const data = await response.json().catch(() => ({}))
         if (response.ok) this.addEvent('success', 'Takeoff 50m')
+        else this.addEvent('error', data.error || 'Takeoff failed')
       } catch (e) {
         this.addEvent('error', `Takeoff: ${e.message}`)
       }
@@ -357,7 +358,9 @@ export default {
     async droneHold() {
       try {
         const response = await fetch(`${API_BASE}/drone/hold`, { method: 'POST' })
+        const data = await response.json().catch(() => ({}))
         if (response.ok) this.addEvent('info', 'Hold position')
+        else this.addEvent('error', data.error || 'Hold failed')
       } catch (e) {
         this.addEvent('error', `Hold: ${e.message}`)
       }
@@ -365,7 +368,9 @@ export default {
     async droneLand() {
       try {
         const response = await fetch(`${API_BASE}/drone/land`, { method: 'POST' })
+        const data = await response.json().catch(() => ({}))
         if (response.ok) this.addEvent('success', 'Landing')
+        else this.addEvent('error', data.error || 'Land failed')
       } catch (e) {
         this.addEvent('error', `Land: ${e.message}`)
       }
@@ -377,9 +382,12 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reason: 'operator_request' }),
         })
+        const data = await response.json().catch(() => ({}))
         if (response.ok) {
           this.rtlReason = 'operator_request'
-          this.addEvent('warning', 'RTL initiated')
+          this.addEvent('warning', data.message || 'RTL initiated')
+        } else {
+          this.addEvent('error', data.error || 'RTL failed')
         }
       } catch (e) {
         this.addEvent('error', `RTL: ${e.message}`)
@@ -391,6 +399,11 @@ export default {
       this.missionValid = false
       this.missionBlockReason = null
       this.addEvent('info', `WP${this.waypoints.length} added`)
+      this.$nextTick(() => {
+        if (this.$refs.mapComponent) {
+          this.$refs.mapComponent.syncWaypoints(this.waypoints)
+        }
+      })
     },
     moveWaypoint({ index, lat, lon }) {
       if (this.waypoints[index]) {

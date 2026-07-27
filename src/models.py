@@ -105,6 +105,8 @@ class TelemetrySnapshot:
                 "vy": self.vy,
                 "vz": self.vz,
                 "speed": self.speed_m_s,
+                "ground_speed_m_s": (self.vx ** 2 + self.vy ** 2) ** 0.5,
+                "vertical_speed_m_s": abs(self.vz),
             },
             "attitude": {
                 "roll": self.roll_deg,
@@ -131,6 +133,7 @@ class TelemetrySnapshot:
 
     def to_api_dict(self) -> dict:
         """Flat dict for REST API and dashboard (10 Hz polling)."""
+        ground = (self.vx ** 2 + self.vy ** 2) ** 0.5
         return {
             "timestamp": self.timestamp,
             "lat": self.lat,
@@ -141,6 +144,8 @@ class TelemetrySnapshot:
             "vy": self.vy,
             "vz": self.vz,
             "speed": self.speed_m_s,
+            "ground_speed_m_s": ground,
+            "vertical_speed_m_s": abs(self.vz),
             "roll": self.roll_deg,
             "pitch": self.pitch_deg,
             "yaw": self.yaw_deg,

@@ -62,3 +62,16 @@ curl http://127.0.0.1:5001/api/video/status
 | 5600 | Gazebo камера H.264/RTP |
 
 После ошибки Initialize: `docker restart ais-px4-gazebo`
+
+**Важно (Docker + камера):**
+1. `PX4_VIDEO_HOST_IP=host.docker.internal` — поток на Mac, не в контейнер
+2. **Не пробрасываем** `-p 5600:5600` — иначе Docker держит порт и GStreamer не может принять видео
+
+Пересоздайте контейнер после обновления скрипта:
+
+```bash
+./scripts/start-px4-gazebo.sh --stop
+./scripts/start-px4-gazebo.sh
+```
+
+Проверка UDP на Mac: `gst-launch-1.0 udpsrc port=5600 ! fakesink dump=true` — должны идти пакеты после Initialize.

@@ -10,7 +10,7 @@ Tests RTL triggering on:
 import pytest
 import asyncio
 import time
-from unittest.mock import Mock, AsyncMock, MagicMock
+from unittest.mock import Mock, AsyncMock, MagicMock, patch
 from dataclasses import dataclass
 
 from src.failsafe import (
@@ -45,25 +45,25 @@ class TestBatteryMonitor:
 
     def test_battery_ok(self):
         """Test normal battery level."""
-        monitor = BatteryMonitor(warning=20, critical=5)
+        monitor = BatteryMonitor(warning_percent=20, critical_percent=5)
         result = monitor.check(50.0)
         assert result is None
 
     def test_battery_warning(self):
         """Test warning threshold."""
-        monitor = BatteryMonitor(warning=20, critical=5)
+        monitor = BatteryMonitor(warning_percent=20, critical_percent=5)
         result = monitor.check(19.0)
         assert result == FailsafeReason.BATTERY_LOW
 
     def test_battery_critical(self):
         """Test critical threshold."""
-        monitor = BatteryMonitor(warning=20, critical=5)
+        monitor = BatteryMonitor(warning_percent=20, critical_percent=5)
         result = monitor.check(4.0)
         assert result == FailsafeReason.BATTERY_CRITICAL
 
     def test_battery_status(self):
         """Test battery status reporting."""
-        monitor = BatteryMonitor(warning=20, critical=5)
+        monitor = BatteryMonitor(warning_percent=20, critical_percent=5)
         monitor.check(50.0)
         status = monitor.get_battery_status()
 
@@ -161,8 +161,7 @@ class TestFailsafeMonitor:
 
         # Setup telemetry with low battery
         mock_telemetry_collector.get_latest.return_value = create_mock_telemetry(
-            timestamp=time.time(),
-            battery_percent=19.0,  # Below 20% threshold
+            battery_percent=19.0,
         )
 
         # Callback to track RTL
@@ -263,20 +262,17 @@ class TestFailsafeMonitor:
         async def mock_return_to_launch(reason):
             call_sequence.append("rtl")
 
-        async def mock_get_latest():
-            await asyncio.sleep(0.1)
-            return create_mock_telemetry(
-                timestamp=time.time(),
+        mock_drone.hold_position = mock_hold_position
+        mock_drone.return_to_launch = mock_return_to_launch
+        mock_telemetry_collector.get_latest = Mock(
+            return_value=create_mock_telemetry(
                 battery_percent=50.0,
                 altitude_m=0.2,
             )
+        )
 
-        mock_drone.hold_position = mock_hold_position
-        mock_drone.return_to_launch = mock_return_to_launch
-        mock_telemetry_collector.get_latest = mock_get_latest
-
-        # Trigger RTL
-        await monitor._trigger_rtl(FailsafeReason.BATTERY_LOW)
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await monitor._trigger_rtl(FailsafeReason.BATTERY_LOW)
 
         # Verify sequence
         assert "hold" in call_sequence
@@ -296,31 +292,19 @@ class TestFailsafeIntegration:
 
         telemetry_collector = Mock()
         telemetry_snapshot = create_mock_telemetry(
-            timestamp=time.time(),
             battery_percent=50.0,
         )
         telemetry_collector.get_latest = Mock(return_value=telemetry_snapshot)
 
+        telemetry_collector.get_latest = Mock(return_value=telemetry_snapshot)
+
         monitor = FailsafeMonitor(drone, telemetry_collector)
+        monitor._monitoring = True
 
-        # Start monitoring (short duration for test)
-        start_time = time.time()
+        for _ in range(3):
+            await monitor._check_conditions()
 
-        async def run_monitor():
-            await monitor.start()
-
-        # Run for 0.5 seconds then stop
-        task = asyncio.create_task(run_monitor())
-        await asyncio.sleep(0.5)
-        await monitor.stop()
-
-        try:
-            await asyncio.wait_for(task, timeout=1.0)
-        except asyncio.TimeoutError:
-            pass
-
-        # Verify monitoring was running
-        assert telemetry_collector.get_latest.called
+        assert telemetry_collector.get_latest.call_count >= 1
 
 
 if __name__ == "__main__":

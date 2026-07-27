@@ -30,6 +30,12 @@ stop_container() {
   docker rm -f "$NAME" 2>/dev/null || true
 }
 
+stop_conflicts() {
+  ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  # shellcheck source=scripts/stop-other-sitl.sh
+  source "$ROOT/scripts/stop-other-sitl.sh" "$NAME"
+}
+
 case "${1:-start}" in
   --stop|stop)
     stop_container
@@ -37,10 +43,12 @@ case "${1:-start}" in
     exit 0
     ;;
   --fg|fg)
+    stop_conflicts
     stop_container
     exec run_px4 --rm --name "$NAME"
     ;;
   start|"")
+    stop_conflicts
     stop_container
     run_px4 -d --name "$NAME"
     echo "PX4 SITL started: $NAME ($IMAGE)"

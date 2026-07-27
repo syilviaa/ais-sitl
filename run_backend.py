@@ -89,13 +89,14 @@ def main():
         logger.info("=" * 70)
         logger.info("")
 
-        # Start server
+        # Flask debug reloader forks the process and breaks MAVSDK/gRPC — keep off.
+        use_reloader = os.environ.get("FLASK_RELOAD", "").lower() in ("1", "true", "yes")
         socketio.run(
             app,
             host='127.0.0.1',
             port=port,
             debug=True,
-            use_reloader=True,
+            use_reloader=use_reloader,
             allow_unsafe_werkzeug=True,
         )
 

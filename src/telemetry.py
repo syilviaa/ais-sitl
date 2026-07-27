@@ -21,6 +21,7 @@ from collections import deque
 from datetime import datetime
 
 from src.models import TelemetrySnapshot, GPSFixType, FlightMode
+from src.telemetry_battery import BatterySimulator
 
 if TYPE_CHECKING:
     from mavsdk import System
@@ -77,10 +78,23 @@ class TelemetryCollector:
         self._latest_snapshot: Optional[TelemetrySnapshot] = None
         self._history: deque = deque(maxlen=history_size)
         self._demo_drone = None
+        self._battery_sim = BatterySimulator()
 
         # Collection control
         self._collecting = False
         self._collection_task: Optional[asyncio.Task] = None
+        self._stream_tasks: List[asyncio.Task] = []
+
+        # Latest values from MAVSDK background streams (non-blocking reads)
+        self._stream_cache: dict = {
+            "position": None,
+            "velocity": None,
+            "attitude": None,
+            "battery": None,
+            "gps": None,
+            "armed": None,
+            "flight_mode": None,
+        }
 
         # Callbacks
         self._on_telemetry_callbacks: List[Callable] = []
@@ -104,12 +118,20 @@ class TelemetryCollector:
 
         logger.info(f"🟢 Starting telemetry collection at {self._rate_hz} Hz")
         self._collecting = True
+        self._start_stream_consumers()
         self._collection_task = asyncio.create_task(self._collection_loop())
 
     async def stop(self):
         """Stop telemetry collection."""
         logger.info("🔴 Stopping telemetry collection")
         self._collecting = False
+
+        for task in self._stream_tasks:
+            if not task.done():
+                task.cancel()
+        if self._stream_tasks:
+            await asyncio.gather(*self._stream_tasks, return_exceptions=True)
+        self._stream_tasks = []
 
         if self._collection_task:
             try:
@@ -246,14 +268,17 @@ class TelemetryCollector:
             return self._get_stub_telemetry()
 
         try:
-            # Collect data from MAVSDK streams (async)
-            position = await self._get_position()
-            velocity = await self._get_velocity()
-            attitude = await self._get_attitude()
-            battery = await self._get_battery()
-            gps = await self._get_gps()
-            armed = await self._get_armed()
-            flight_mode = await self._get_flight_mode()
+            position = self._stream_cache["position"] or self._default_position()
+            velocity = self._stream_cache["velocity"] or self._default_velocity()
+            attitude = self._stream_cache["attitude"] or self._default_attitude()
+            battery = self._stream_cache["battery"] or self._default_battery()
+            gps = self._stream_cache["gps"] or self._default_gps()
+            armed = (
+                self._stream_cache["armed"]
+                if self._stream_cache["armed"] is not None
+                else False
+            )
+            flight_mode = self._stream_cache["flight_mode"] or "unknown"
 
             # Create snapshot
             snapshot = TelemetrySnapshot(
@@ -269,7 +294,11 @@ class TelemetryCollector:
                 roll_deg=attitude["roll"],
                 pitch_deg=attitude["pitch"],
                 yaw_deg=attitude["yaw"],
-                battery_percent=battery["percent"],
+                battery_percent=self._battery_sim.tick(
+                    armed=armed,
+                    mode=flight_mode,
+                    alt_m=position["alt"],
+                ),
                 battery_voltage_v=battery["voltage"],
                 battery_current_a=battery["current"],
                 gps_fix=gps["fix"],
@@ -287,9 +316,159 @@ class TelemetryCollector:
             return None
 
     # ========================================================================
-    # MAVSDK Data Streams
+    # MAVSDK background streams (subscribe once, read from cache at 10 Hz)
     # ========================================================================
 
+    def _start_stream_consumers(self) -> None:
+        if not MAVSDK_AVAILABLE or not self._system or self._stream_tasks:
+            return
+        self._stream_tasks = [
+            asyncio.create_task(self._consume_position()),
+            asyncio.create_task(self._consume_velocity()),
+            asyncio.create_task(self._consume_attitude()),
+            asyncio.create_task(self._consume_battery()),
+            asyncio.create_task(self._consume_gps()),
+            asyncio.create_task(self._consume_armed()),
+            asyncio.create_task(self._consume_flight_mode()),
+        ]
+
+    async def _consume_position(self) -> None:
+        try:
+            async for pos in self._system.telemetry.position():
+                self._stream_cache["position"] = {
+                    "lat": pos.latitude_deg,
+                    "lon": pos.longitude_deg,
+                    "alt": pos.relative_altitude_m,
+                    "alt_msl": pos.absolute_altitude_m,
+                    "distance": pos.distance_m if hasattr(pos, "distance_m") else 0.0,
+                }
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Position stream error: {e}")
+
+    @staticmethod
+    def _speed_m_s(north: float, east: float, down: float) -> float:
+        """Total speed (m/s) — includes vertical during takeoff/hover."""
+        return (north * north + east * east + down * down) ** 0.5
+
+    @staticmethod
+    def _velocity_dict(north: float, east: float, down: float) -> dict:
+        total = TelemetryCollector._speed_m_s(north, east, down)
+        return {
+            "vx": north,
+            "vy": east,
+            "vz": down,
+            "speed": total,
+            "ground_speed": (north * north + east * east) ** 0.5,
+            "vertical_speed": abs(down),
+        }
+
+    async def _consume_velocity(self) -> None:
+        try:
+            async for vel in self._system.telemetry.velocity_ned():
+                self._stream_cache["velocity"] = self._velocity_dict(
+                    vel.north_m_s, vel.east_m_s, vel.down_m_s
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Velocity stream error: {e}")
+
+    async def _consume_attitude(self) -> None:
+        try:
+            async for att in self._system.telemetry.attitude_euler():
+                self._stream_cache["attitude"] = {
+                    "roll": att.roll_deg,
+                    "pitch": att.pitch_deg,
+                    "yaw": att.yaw_deg,
+                }
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Attitude stream error: {e}")
+
+    async def _consume_battery(self) -> None:
+        try:
+            async for bat in self._system.telemetry.battery():
+                percent = bat.remaining_percent
+                if percent is not None and percent <= 1.0:
+                    percent *= 100.0
+                self._stream_cache["battery"] = {
+                    "percent": percent if percent is not None else 100.0,
+                    "voltage": bat.voltage_v if hasattr(bat, "voltage_v") else 0.0,
+                    "current": bat.current_a if hasattr(bat, "current_a") else 0.0,
+                }
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Battery stream error: {e}")
+
+    async def _consume_gps(self) -> None:
+        try:
+            async for gps in self._system.telemetry.gps_info():
+                fix = "no_fix"
+                if gps.fix_type == 3:
+                    fix = "3d"
+                elif gps.fix_type == 2:
+                    fix = "2d"
+                self._stream_cache["gps"] = {
+                    "fix": fix,
+                    "satellites": gps.num_satellites,
+                }
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"GPS stream error: {e}")
+
+    async def _consume_armed(self) -> None:
+        try:
+            async for armed in self._system.telemetry.armed():
+                self._stream_cache["armed"] = armed
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Armed stream error: {e}")
+
+    async def _consume_flight_mode(self) -> None:
+        try:
+            async for mode in self._system.telemetry.flight_mode():
+                self._stream_cache["flight_mode"] = str(mode).split(".")[-1].lower()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"Flight mode stream error: {e}")
+
+    @staticmethod
+    def _default_position() -> dict:
+        return {
+            "lat": 0.0,
+            "lon": 0.0,
+            "alt": 0.0,
+            "alt_msl": 0.0,
+            "distance": 0.0,
+        }
+
+    @staticmethod
+    def _default_velocity() -> dict:
+        return {
+            "vx": 0.0, "vy": 0.0, "vz": 0.0, "speed": 0.0,
+            "ground_speed": 0.0, "vertical_speed": 0.0,
+        }
+
+    @staticmethod
+    def _default_attitude() -> dict:
+        return {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+
+    @staticmethod
+    def _default_battery() -> dict:
+        return {"percent": 100.0, "voltage": 0.0, "current": 0.0}
+
+    @staticmethod
+    def _default_gps() -> dict:
+        return {"fix": "no_fix", "satellites": 0}
+
+    # Legacy per-call stream readers (kept for tests / compatibility)
     async def _get_position(self) -> dict:
         """Get position from MAVSDK."""
         try:
@@ -315,13 +494,9 @@ class TelemetryCollector:
         """Get velocity from MAVSDK."""
         try:
             async for vel in self._system.telemetry.velocity_ned():
-                speed = (vel.north_m_s**2 + vel.east_m_s**2) ** 0.5
-                return {
-                    "vx": vel.north_m_s,
-                    "vy": vel.east_m_s,
-                    "vz": vel.down_m_s,
-                    "speed": speed,
-                }
+                return self._velocity_dict(
+                    vel.north_m_s, vel.east_m_s, vel.down_m_s
+                )
         except Exception as e:
             logger.error(f"Velocity stream error: {e}")
             return {"vx": 0.0, "vy": 0.0, "vz": 0.0, "speed": 0.0}
@@ -329,7 +504,7 @@ class TelemetryCollector:
     async def _get_attitude(self) -> dict:
         """Get attitude (Euler angles) from MAVSDK."""
         try:
-            async for att in self._system.telemetry.attitude_euler_deg():
+            async for att in self._system.telemetry.attitude_euler():
                 return {
                     "roll": att.roll_deg,
                     "pitch": att.pitch_deg,
@@ -337,14 +512,17 @@ class TelemetryCollector:
                 }
         except Exception as e:
             logger.error(f"Attitude stream error: {e}")
-            return {"roll": 0.0, "pitch": 0.0, "yaw": 0.0}
+            return self._default_attitude()
 
     async def _get_battery(self) -> dict:
         """Get battery status from MAVSDK."""
         try:
             async for bat in self._system.telemetry.battery():
+                percent = bat.remaining_percent
+                if percent is not None and percent <= 1.0:
+                    percent *= 100.0
                 return {
-                    "percent": bat.remaining_percent * 100,
+                    "percent": percent if percent is not None else 100.0,
                     "voltage": bat.voltage_v if hasattr(bat, "voltage_v") else 0.0,
                     "current": bat.current_a if hasattr(bat, "current_a") else 0.0,
                 }

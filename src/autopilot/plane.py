@@ -447,7 +447,7 @@ class Drone:
     async def takeoff(
         self, altitude_m: float, timeout_s: Optional[float] = None
     ) -> bool:
-        """Take off to a valid relative altitude after arming."""
+        """Take off to a valid relative altitude (auto-arm from READY)."""
         if not isinstance(altitude_m, (float, int)) or isinstance(
             altitude_m, bool
         ):
@@ -459,7 +459,16 @@ class Drone:
         ):
             raise ValueError("altitude_m must be between 0.5 and 120 metres")
         async with self._get_lock():
-            self._require_state(DroneState.ARMED)
+            self._require_connected()
+            await self._exit_land_mode_if_needed()
+            if not self._telemetry.armed:
+                await self._system.action.arm()
+                await self._wait_for_stream(
+                    self._system.telemetry.armed,
+                    lambda armed: armed,
+                    timeout_s or self._command_timeout_s,
+                )
+            self._state = DroneState.ARMED
             await self._system.action.set_takeoff_altitude(float(altitude_m))
             await self._system.action.takeoff()
             try:
@@ -500,15 +509,40 @@ class Drone:
     async def hold_position(self) -> bool:
         """Command PX4 to hold its current position."""
         async with self._get_lock():
-            self._require_state(DroneState.AIRBORNE, DroneState.HOLDING)
+            self._require_connected()
+            await self._exit_land_mode_if_needed()
             await self._system.action.hold()
-            self._state = DroneState.HOLDING
+            if self._state in (
+                DroneState.AIRBORNE,
+                DroneState.HOLDING,
+                DroneState.RTL,
+            ):
+                self._state = DroneState.HOLDING
+            elif self._telemetry.armed and (
+                self._telemetry.position.relative_altitude_m or 0
+            ) > 0.5:
+                self._state = DroneState.HOLDING
+            else:
+                self._state = DroneState.READY
             return True
 
     async def return_to_launch(self, reason: str = "operator request") -> bool:
         """Request PX4 return-to-launch; failsafe policy remains external."""
         async with self._get_lock():
-            self._require_state(DroneState.AIRBORNE, DroneState.HOLDING)
+            self._require_connected()
+            airborne = self._state in (
+                DroneState.AIRBORNE,
+                DroneState.HOLDING,
+                DroneState.RTL,
+            )
+            if not airborne:
+                alt = self._telemetry.position.relative_altitude_m or 0.0
+                airborne = bool(self._telemetry.armed and alt > 0.5)
+            if not airborne:
+                await self._exit_land_mode_if_needed()
+                self._state = DroneState.READY
+                logger.info("RTL skipped — already on ground")
+                return True
             logger.warning("Return to launch requested: %s", reason)
             await self._system.action.return_to_launch()
             self._state = DroneState.RTL
@@ -615,6 +649,15 @@ class Drone:
                 names, self._state.name
             )
             raise InvalidStateError(message)
+
+    async def _exit_land_mode_if_needed(self) -> None:
+        """Leave PX4 LAND mode so arm/takeoff commands are accepted."""
+        mode = (self._telemetry.flight_mode or "").upper()
+        if "LAND" not in mode:
+            return
+        logger.info("Exiting LAND mode via HOLD")
+        await self._system.action.hold()
+        await asyncio.sleep(0.5)
 
     async def _wait_for_stream(
         self,

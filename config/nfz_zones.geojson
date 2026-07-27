@@ -5,8 +5,8 @@
     {
       "type": "Feature",
       "properties": {
-        "name": "Training Restricted Area A",
-        "description": "Учебная запретная зона — тренировочный полигон AIS",
+        "name": "Учебная зона A (NFZ)",
+        "description": "Демонстрационная запретная зона для тренировки — полёты запрещены",
         "max_altitude": 200.0,
         "min_altitude": 0.0,
         "active": true

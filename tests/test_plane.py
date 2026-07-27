@@ -153,10 +153,11 @@ async def test_arm_is_rejected_before_connection_and_ready():
 
 
 @pytest.mark.asyncio
-async def test_takeoff_is_rejected_before_arm():
+async def test_takeoff_auto_arms_from_ready():
     drone = await ready_drone()
-    with pytest.raises(InvalidStateError):
-        await drone.takeoff(5.0)
+    await drone.takeoff(5.0)
+    assert "arm" in drone._system.action.calls
+    assert drone.state is DroneState.AIRBORNE
     await drone.disconnect()
 
 

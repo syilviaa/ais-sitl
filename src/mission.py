@@ -20,7 +20,13 @@ from src.models import Waypoint, MissionItem, MissionProgress
 if TYPE_CHECKING:
     from mavsdk import System
 
-from src.mavsdk_import import IMPORT_ERROR, MAVSDK_AVAILABLE, System
+from src.mavsdk_import import (
+    IMPORT_ERROR,
+    MAVSDK_AVAILABLE,
+    MissionItem as MavMissionItem,
+    MissionPlan,
+    System,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +72,7 @@ class MissionService:
         self._mission_running = False
         self._current_mission_items: List[MissionItem] = []
         self._on_progress_callbacks: List[Callable] = []
+        self._last_upload_error: Optional[str] = None
 
         logger.info("MissionService initialized")
 
@@ -102,19 +109,54 @@ class MissionService:
             return True
 
         try:
-            logger.debug(f"Uploading {len(mission_items)} items to autopilot")
+            logger.debug(f"Uploading {len(waypoints)} items to autopilot")
+            self._last_upload_error = None
 
-            # MAVSDK mission upload
-            mission_plan = self._system.mission.import_qgroundcontrol_mission(
-                mission_items
-            )
-            await self._system.mission.upload_mission(mission_plan)
+            # PX4 rejects mission updates while moving — hold briefly first.
+            try:
+                await self._system.action.hold()
+                await asyncio.sleep(0.4)
+            except Exception as hold_exc:
+                logger.debug("Hold before mission upload: %s", hold_exc)
+
+            try:
+                await self._system.mission.clear_mission()
+            except Exception as clear_exc:
+                logger.debug("clear_mission: %s", clear_exc)
+
+            mav_items = []
+            for index, wp in enumerate(waypoints):
+                vehicle_action = (
+                    MavMissionItem.VehicleAction.TAKEOFF
+                    if index == 0
+                    else MavMissionItem.VehicleAction.NONE
+                )
+                mav_items.append(
+                    MavMissionItem(
+                        latitude_deg=wp.lat,
+                        longitude_deg=wp.lon,
+                        relative_altitude_m=wp.altitude_m,
+                        speed_m_s=wp.speed_m_s,
+                        is_fly_through=True,
+                        gimbal_pitch_deg=float("nan"),
+                        gimbal_yaw_deg=float("nan"),
+                        camera_action=MavMissionItem.CameraAction.NONE,
+                        loiter_time_s=float("nan"),
+                        camera_photo_interval_s=float("nan"),
+                        acceptance_radius_m=wp.acceptance_radius_m,
+                        yaw_deg=float("nan"),
+                        camera_photo_distance_m=float("nan"),
+                        vehicle_action=vehicle_action,
+                    )
+                )
+            await self._system.mission.upload_mission(MissionPlan(mav_items))
 
             logger.info("✅ Mission uploaded successfully")
             self._mission_uploaded = True
             return True
 
         except Exception as e:
+            self._last_upload_error = str(e)
             logger.error(f"❌ Mission upload failed: {e}")
             self._mission_uploaded = False
             return False
@@ -223,12 +265,13 @@ class MissionService:
             MissionProgress object or None if not available
         """
         if not MAVSDK_AVAILABLE or not self._system:
-            # Stub: return progress as if mission running
-            return MissionProgress(
+            mission_progress = MissionProgress(
                 current_waypoint=0,
                 total_waypoints=len(self._current_mission_items),
                 is_mission_finished=False,
             )
+            await self._notify_callbacks(mission_progress)
+            return mission_progress
 
         try:
             async for progress in self._system.mission.mission_progress():
