@@ -172,6 +172,7 @@
 import MapComponent from './components/MapComponent.vue'
 import { DEFAULT_WAYPOINTS } from './config/trainingZone.js'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
+import { connectTelemetry, disconnectTelemetry } from './services/telemetrySocket.js'
 
 const API_BASE = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000'}/api`
 
@@ -242,12 +243,14 @@ export default {
     this.unsubWsStatus = onConnectionStatus((s) => {
       this.wsStatus = s
     })
+    connectTelemetry()
     this.startRestFallback()
     this.startFailsafePolling()
   },
   beforeUnmount() {
     if (this.unsubTelemetry) this.unsubTelemetry()
     if (this.unsubWsStatus) this.unsubWsStatus()
+    disconnectTelemetry()
     if (this.restFallbackInterval) clearInterval(this.restFallbackInterval)
     if (this.failsafeInterval) clearInterval(this.failsafeInterval)
     if (this.progressInterval) clearInterval(this.progressInterval)
