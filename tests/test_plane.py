@@ -246,7 +246,7 @@ async def test_telemetry_callback_is_limited_to_ten_hz():
 async def test_dangerous_mission_is_rejected_before_mavsdk_upload():
     """The default validator loads the real project NFZ GeoJSON."""
     drone = await ready_drone()
-    mission = [(47.3800, 8.5400, 50.0), (47.4100, 8.5700, 50.0)]
+    mission = [(51.1715, 71.4540, 50.0), (51.1720, 71.4550, 50.0)]
     with pytest.raises(MissionValidationError):
         await drone.fly_mission(mission)
     assert not drone._system.mission.upload_called

@@ -114,6 +114,8 @@ class TestMissionEndpoints:
 
     def test_mission_validation_empty(self, client, app):
         """Test mission validation with empty waypoints."""
+        if app.mission_service is None:
+            app.mission_service = AsyncMock()
         with patch.object(app.mission_service, 'validate_mission', new_callable=AsyncMock) as mock:
             mock.return_value = {'valid': False, 'error': 'No waypoints'}
 
@@ -126,10 +128,12 @@ class TestMissionEndpoints:
     def test_mission_validation_valid(self, client, app):
         """Test mission validation with valid waypoints."""
         waypoints = [
-            {'lat': 47.39, 'lon': 8.54, 'altitude': 50},
-            {'lat': 47.40, 'lon': 8.55, 'altitude': 60},
+            {'lat': 51.1680, 'lon': 71.4460, 'altitude': 50},
+            {'lat': 51.1688, 'lon': 71.4475, 'altitude': 60},
         ]
 
+        if app.mission_service is None:
+            app.mission_service = AsyncMock()
         with patch.object(app.mission_service, 'validate_mission', new_callable=AsyncMock) as mock:
             mock.return_value = {'valid': True, 'waypoints_count': 2}
 
@@ -214,11 +218,13 @@ class TestApiIntegration:
     def test_mission_workflow(self, client, app):
         """Test complete mission workflow."""
         waypoints = [
-            {'lat': 47.3977, 'lon': 8.5455, 'altitude': 50},
-            {'lat': 47.3985, 'lon': 8.5465, 'altitude': 60},
-            {'lat': 47.3977, 'lon': 8.5455, 'altitude': 0},
+            {'lat': 51.1680, 'lon': 71.4460, 'altitude': 50},
+            {'lat': 51.1688, 'lon': 71.4475, 'altitude': 60},
+            {'lat': 51.1680, 'lon': 71.4460, 'altitude': 0},
         ]
 
+        if app.mission_service is None:
+            app.mission_service = AsyncMock()
         with patch.object(app.mission_service, 'validate_mission', new_callable=AsyncMock):
             with patch.object(app.mission_service, 'upload_mission', new_callable=AsyncMock):
                 with patch.object(app.mission_service, 'start_mission', new_callable=AsyncMock):

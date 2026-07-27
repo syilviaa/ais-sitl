@@ -1,0 +1,57 @@
+# AIS SITL — Demo за 10 минут (Sprint 1 MVP)
+
+## Требования
+
+- **Python 3.11** (не 3.14 — MAVSDK)
+- **Node.js 18+**
+- **PX4 SITL** локально (UDP onboard 14580 → remote 14540)
+
+## 1. PX4 SITL
+
+Запустите SITL на машине, где будет backend. После неудачных connect — **перезапустите SITL**.
+
+Проверка UDP:
+```bash
+./venv/bin/python scripts/mavlink_udp_probe.py --port 14540 --seconds 3
+```
+Должны быть datagrams с `127.0.0.1:14580`.
+
+## 2. Backend
+
+```bash
+chmod +x scripts/start-backend.sh
+./scripts/start-backend.sh
+```
+
+Проверка:
+```bash
+curl http://127.0.0.1:5000/api/health
+curl -X POST http://127.0.0.1:5000/api/drone/initialize \
+  -H 'Content-Type: application/json' \
+  -d '{"port":14540,"sitl_port":14580}'
+```
+
+## 3. Dashboard
+
+```bash
+cd web
+cp .env.example .env.local   # optional
+npm install
+npm run dev
+```
+
+Откройте http://127.0.0.1:5173
+
+## 4. E2E сценарий
+
+1. **Initialize SITL** → success  
+2. **WS LIVE** в шапке + телеметрия на карте  
+3. Mission → **Validate** (4 WP Astana) → OK  
+4. Добавьте WP в NFZ → **Validate blocked**  
+5. **Takeoff → Hold → RTL**
+
+## Troubleshooting
+
+- `lsof -i :14540` — порт свободен  
+- SITL в Docker → `--network host`  
+- См. `docs/TROUBLESHOOTING.md`

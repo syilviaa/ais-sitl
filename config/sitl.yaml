@@ -10,8 +10,8 @@ sitl:
 
   # Initial position (latitude, longitude, altitude)
   start_position:
-    lat: 47.3977
-    lon: 8.5455
+    lat: 51.1694
+    lon: 71.4491
     alt: 0.0  # meters above ground
 
   # Flight parameters
