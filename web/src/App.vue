@@ -9,7 +9,11 @@
       <div class="navbar-status">
         <span :class="['status-badge', apiConnected ? 'connected' : 'disconnected']">
           {{ apiConnected ? '🟢' : '🔴' }}
-          {{ apiConnected ? 'CONNECTED' : 'DISCONNECTED' }}
+          API {{ apiConnected ? 'CONNECTED' : 'DISCONNECTED' }}
+        </span>
+        <span :class="['status-badge', telemetryStatus]">
+          {{ telemetryStatusIcon }}
+          WebSocket: {{ telemetryStatus }}
         </span>
       </div>
     </header>
@@ -181,8 +185,10 @@
 
 <script>
 import MapComponent from './components/MapComponent.vue'
+import { createTelemetrySocket } from './services/telemetrySocket.js'
 
-const API_BASE = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000'}/api`
+const BACKEND_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000'
+const API_BASE = `${BACKEND_URL}/api`
 
 // 4 waypoints avoiding Airport NFZ (TZ §4.2 sprint experiment)
 const DEFAULT_WAYPOINTS = [
@@ -226,18 +232,28 @@ export default {
       },
       waypoints: [...DEFAULT_WAYPOINTS],
       events: [],
-      telemetryInterval: null,
+      telemetryStatus: 'reconnecting',
+      telemetrySocket: null,
       progressInterval: null,
     }
+  },
+  computed: {
+    telemetryStatusIcon() {
+      if (this.telemetryStatus === 'connected') return '🟢'
+      if (this.telemetryStatus === 'reconnecting') return '🟡'
+      return '🔴'
+    },
   },
   mounted() {
     this.addEvent('system', 'Dashboard loaded')
     this.loadNfzZones()
     this.initializeBackend()
-    this.startTelemetryPolling()
+    this.startTelemetryStream()
+    window.addEventListener('pagehide', this.stopTelemetryStream)
   },
   beforeUnmount() {
-    if (this.telemetryInterval) clearInterval(this.telemetryInterval)
+    window.removeEventListener('pagehide', this.stopTelemetryStream)
+    this.stopTelemetryStream()
     if (this.progressInterval) clearInterval(this.progressInterval)
   },
   methods: {
@@ -264,6 +280,7 @@ export default {
             body: JSON.stringify({ timeout: 30 }),
           })
           this.droneReady = true
+          this.telemetrySocket?.start()
           this.addEvent('success', 'Drone connected and ready')
         } else {
           this.addEvent('error', data.error || 'Drone init failed')
@@ -355,23 +372,34 @@ export default {
         this.addEvent('error', `API error: ${e.message}`)
       }
     },
-    async startTelemetryPolling() {
-      this.telemetryInterval = setInterval(async () => {
-        try {
-          const response = await fetch(`${API_BASE}/telemetry/latest`)
-          if (response.ok) {
-            const data = await response.json()
-            if (data) {
-              this.telemetry = { ...this.telemetry, ...data }
-              if (this.$refs.mapComponent) {
-                this.$refs.mapComponent.updateDronePosition(this.telemetry)
-              }
-            }
-          }
-        } catch (e) {
-          console.error('Telemetry error:', e)
-        }
-      }, 100) // 10 Hz
+    startTelemetryStream() {
+      this.addEvent('warning', 'WebSocket: reconnecting')
+      this.telemetrySocket = createTelemetrySocket({
+        url: BACKEND_URL,
+        onStatus: (status) => {
+          this.updateTelemetryStatus(status)
+        },
+        onTelemetry: (data) => {
+          this.telemetry = { ...this.telemetry, ...data }
+        },
+        onError: (message) => {
+          this.addEvent('error', `Telemetry error: ${message}`)
+        },
+      })
+      this.telemetrySocket.connect()
+    },
+    updateTelemetryStatus(status) {
+      if (this.telemetryStatus === status) return
+
+      this.telemetryStatus = status
+      if (status === 'connected') {
+        this.addEvent('success', 'WebSocket: connected')
+      } else if (status === 'reconnecting') {
+        this.addEvent('warning', 'WebSocket: reconnecting')
+      }
+    },
+    stopTelemetryStream() {
+      this.telemetrySocket?.close()
     },
     async uploadMission() {
       try {
@@ -524,6 +552,11 @@ export default {
   font-weight: 600;
 }
 
+.navbar-status {
+  display: flex;
+  gap: 0.5rem;
+}
+
 .subtitle {
   font-size: 0.75rem;
   opacity: 0.8;
@@ -543,6 +576,16 @@ export default {
 }
 
 .status-badge.disconnected {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.status-badge.reconnecting {
+  background: rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
+}
+
+.status-badge.error {
   background: rgba(239, 68, 68, 0.2);
   color: #ef4444;
 }
