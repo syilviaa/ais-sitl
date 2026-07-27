@@ -13,8 +13,12 @@ from typing import Optional, List, Dict, Any
 
 from src.mission import MissionService
 from src.models import Waypoint, MissionProgress
+from src.autopilot.geofence import GeofenceValidator
+from src.mission_plan import waypoints_to_plan
 
 logger = logging.getLogger(__name__)
+
+_geofence_validator = GeofenceValidator()
 
 
 class MissionServiceAPI:
@@ -74,6 +78,19 @@ class MissionServiceAPI:
                         "valid": False,
                         "error": f"Waypoint {i}: speed {wp.speed_m_s} out of range",
                     }
+
+            # NFZ pre-flight validation (TZ §2.3)
+            if not _geofence_validator.loaded:
+                _geofence_validator.load_nfz_zones()
+            nfz_path = [
+                (wp.lat, wp.lon, wp.altitude_m) for wp in wp_objects
+            ]
+            if _geofence_validator.loaded and not _geofence_validator.validate_mission(nfz_path):
+                return {
+                    "valid": False,
+                    "error": "Mission path intersects a No-Fly Zone (NFZ)",
+                    "nfz_blocked": True,
+                }
 
             logger.info("✅ Mission validation passed")
             return {
@@ -251,15 +268,21 @@ class MissionServiceAPI:
     async def get_progress(self) -> Dict[str, Any]:
         """Get mission progress."""
         try:
-            progress = self.service.get_progress()
+            progress = await self.service.get_progress()
+            if progress:
+                return {
+                    "current": progress.current_waypoint,
+                    "total": progress.total_waypoints,
+                    "percent": progress.percent_complete,
+                    "finished": progress.is_mission_finished,
+                    "mission_id": self.current_mission_id,
+                }
+            total = len(getattr(self.service, "_current_mission_items", []))
             return {
-                "current": progress.get("current", 0),
-                "total": progress.get("total", 0),
-                "percent": (
-                    progress.get("current", 0) / progress.get("total", 1) * 100
-                    if progress.get("total", 0) > 0
-                    else 0
-                ),
+                "current": 0,
+                "total": total,
+                "percent": 0,
+                "finished": False,
                 "mission_id": self.current_mission_id,
             }
         except Exception as e:
@@ -270,6 +293,16 @@ class MissionServiceAPI:
                 "percent": 0,
                 "error": str(e),
             }
+
+    async def export_plan(self, waypoints: List[Dict[str, float]], name: str = "AIS Mission") -> Dict[str, Any]:
+        """Export mission as QGroundControl .plan JSON."""
+        validation = await self.validate_mission(waypoints)
+        if not validation["valid"]:
+            return {"success": False, "error": validation["error"]}
+        return {
+            "success": True,
+            "plan": waypoints_to_plan(waypoints, name=name),
+        }
 
     async def get_history(self) -> Dict[str, Any]:
         """Get mission history."""

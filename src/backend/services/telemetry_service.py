@@ -79,7 +79,7 @@ class TelemetryServiceAPI:
         try:
             snapshot = self.collector.get_latest()
             if snapshot:
-                return snapshot.to_dict()
+                return snapshot.to_api_dict()
             return None
         except Exception as e:
             logger.error(f"Get latest error: {e}")
@@ -90,7 +90,7 @@ class TelemetryServiceAPI:
         try:
             history = self.collector.get_history(count=count)
             return [
-                s.to_dict() if s else None
+                s.to_api_dict() if s else None
                 for s in history
             ]
         except Exception as e:
@@ -102,9 +102,13 @@ class TelemetryServiceAPI:
         try:
             stats = self.collector.get_statistics()
             return {
-                "update_count": stats.get("update_count", 0),
+                "update_count": stats.get("update_count", stats.get("updates", 0)),
                 "target_rate_hz": stats.get("target_rate_hz", 10.0),
                 "actual_rate_hz": stats.get("actual_rate_hz", 0.0),
+                "avg_latency_ms": stats.get("avg_latency_ms", 0.0),
+                "max_latency_ms": stats.get("max_latency_ms", 0.0),
+                "rtt_target_ms": stats.get("rtt_target_ms", 50.0),
+                "rtt_ok": stats.get("rtt_ok", True),
                 "history_size": len(self.collector.get_history(count=100)),
             }
         except Exception as e:

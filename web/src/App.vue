@@ -3,8 +3,8 @@
     <!-- Header -->
     <header class="navbar">
       <div class="navbar-brand">
-        <h1>🚁 AIS SITL Platform - Veha 4</h1>
-        <span class="subtitle">Web Dashboard</span>
+        <h1>🚁 AIS SITL Platform - MVP</h1>
+        <span class="subtitle">Territory Intelligence Dashboard</span>
       </div>
       <div class="navbar-status">
         <span :class="['status-badge', apiConnected ? 'connected' : 'disconnected']">
@@ -18,7 +18,14 @@
     <main class="container">
       <!-- Map Panel -->
       <section class="map-panel">
-        <MapComponent :dronePosition="telemetry" :waypoints="waypoints" ref="mapComponent" />
+        <MapComponent
+          :dronePosition="telemetry"
+          :waypoints="waypoints"
+          :nfzGeoJson="nfzGeoJson"
+          :planMode="planMode"
+          ref="mapComponent"
+          @waypoint-added="addWaypoint"
+        />
       </section>
 
       <!-- Control Panel -->
@@ -53,6 +60,39 @@
               <label>Mode</label>
               <code>{{ telemetry.mode || 'UNKNOWN' }}</code>
             </div>
+            <div class="telemetry-item">
+              <label>Latency</label>
+              <code :class="telemetry.latency_ms < 50 ? 'battery good' : 'battery warning'">
+                {{ telemetry.latency_ms?.toFixed(0) || '—' }} ms
+              </code>
+            </div>
+          </div>
+        </section>
+
+        <!-- Flight Control (TZ §3.2) -->
+        <section class="panel flight-panel">
+          <h2>🎮 Flight Control</h2>
+          <div class="flight-actions">
+            <button @click="initializeDrone" class="btn btn-secondary btn-block" :disabled="droneReady">
+              {{ droneReady ? '✅ Drone Ready' : '🔌 Connect SITL' }}
+            </button>
+            <div class="btn-row">
+              <button @click="droneTakeoff" class="btn btn-primary" :disabled="!droneReady">🛫 Takeoff</button>
+              <button @click="droneLand" class="btn btn-secondary" :disabled="!droneReady">🛬 Land</button>
+              <button @click="droneRtl" class="btn btn-danger" :disabled="!droneReady">🏠 RTL</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Video Stream Stub (TZ §3.3) -->
+        <section class="panel video-panel">
+          <h2>📹 Camera Feed (SITL)</h2>
+          <div class="video-stub">
+            <div class="video-placeholder">
+              <span class="rec-dot">● REC</span>
+              <p>Gazebo Virtual Camera</p>
+              <small>Simulated FPV — MVP stub</small>
+            </div>
           </div>
         </section>
 
@@ -81,9 +121,21 @@
 
         <!-- Mission Control -->
         <section class="panel mission-panel">
-          <h2>✈️ Mission Control</h2>
+          <h2>✈️ Mission Planning</h2>
+          <div class="mission-tools">
+            <button
+              @click="planMode = !planMode"
+              :class="['btn', planMode ? 'btn-primary' : 'btn-secondary', 'btn-block']"
+            >
+              {{ planMode ? '📍 Click map to add WP' : '🗺️ Enable Map Planning' }}
+            </button>
+            <button @click="clearWaypoints" class="btn btn-secondary btn-block" v-if="waypoints.length">
+              🗑 Clear Waypoints ({{ waypoints.length }})
+            </button>
+          </div>
           <div v-if="!missionUploaded" class="upload-section">
-            <button @click="uploadTestMission" class="btn btn-primary btn-block">📤 Upload Mission</button>
+            <button @click="uploadMission" class="btn btn-primary btn-block">📤 Upload Mission</button>
+            <button @click="exportPlan" class="btn btn-secondary btn-block">💾 Export .plan</button>
           </div>
           <div v-else class="mission-active">
             <div class="mission-actions">
@@ -132,6 +184,14 @@ import MapComponent from './components/MapComponent.vue'
 
 const API_BASE = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000'}/api`
 
+// 4 waypoints avoiding Airport NFZ (TZ §4.2 sprint experiment)
+const DEFAULT_WAYPOINTS = [
+  { lat: 47.3950, lon: 8.5300, altitude: 50 },
+  { lat: 47.3965, lon: 8.5330, altitude: 60 },
+  { lat: 47.3980, lon: 8.5360, altitude: 60 },
+  { lat: 47.3950, lon: 8.5300, altitude: 0 },
+]
+
 export default {
   name: 'App',
   components: {
@@ -140,6 +200,9 @@ export default {
   data() {
     return {
       apiConnected: false,
+      droneReady: false,
+      planMode: false,
+      nfzGeoJson: null,
       telemetry: {
         timestamp: null,
         lat: null,
@@ -161,11 +224,7 @@ export default {
         total: 0,
         percent: 0,
       },
-      waypoints: [
-        { lat: 47.3977, lon: 8.5455, altitude: 50 },
-        { lat: 47.3985, lon: 8.5465, altitude: 60 },
-        { lat: 47.3977, lon: 8.5455, altitude: 0 },
-      ],
+      waypoints: [...DEFAULT_WAYPOINTS],
       events: [],
       telemetryInterval: null,
       progressInterval: null,
@@ -173,6 +232,7 @@ export default {
   },
   mounted() {
     this.addEvent('system', 'Dashboard loaded')
+    this.loadNfzZones()
     this.initializeBackend()
     this.startTelemetryPolling()
   },
@@ -181,6 +241,109 @@ export default {
     if (this.progressInterval) clearInterval(this.progressInterval)
   },
   methods: {
+    async loadNfzZones() {
+      try {
+        const response = await fetch(`${API_BASE}/geofence/geojson`)
+        if (response.ok) {
+          this.nfzGeoJson = await response.json()
+          this.addEvent('info', `Loaded ${this.nfzGeoJson.features?.length || 0} NFZ zones`)
+        }
+      } catch (e) {
+        this.addEvent('warning', 'NFZ zones unavailable')
+      }
+    },
+    async initializeDrone() {
+      try {
+        this.addEvent('info', 'Connecting to SITL...')
+        const response = await fetch(`${API_BASE}/drone/initialize`, { method: 'POST' })
+        const data = await response.json()
+        if (data.success) {
+          await fetch(`${API_BASE}/drone/wait-ready`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timeout: 30 }),
+          })
+          this.droneReady = true
+          this.addEvent('success', 'Drone connected and ready')
+        } else {
+          this.addEvent('error', data.error || 'Drone init failed')
+        }
+      } catch (e) {
+        this.addEvent('error', `Init error: ${e.message}`)
+      }
+    },
+    async droneTakeoff() {
+      try {
+        const response = await fetch(`${API_BASE}/drone/takeoff`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ altitude: 50 }),
+        })
+        if (response.ok) this.addEvent('success', 'Takeoff initiated (50m)')
+      } catch (e) {
+        this.addEvent('error', `Takeoff error: ${e.message}`)
+      }
+    },
+    async droneLand() {
+      try {
+        const response = await fetch(`${API_BASE}/drone/land`, { method: 'POST' })
+        if (response.ok) this.addEvent('success', 'Landing initiated')
+      } catch (e) {
+        this.addEvent('error', `Land error: ${e.message}`)
+      }
+    },
+    async droneRtl() {
+      try {
+        const response = await fetch(`${API_BASE}/drone/rtl`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: 'operator_request' }),
+        })
+        if (response.ok) this.addEvent('warning', 'RTL initiated')
+      } catch (e) {
+        this.addEvent('error', `RTL error: ${e.message}`)
+      }
+    },
+    addWaypoint(wp) {
+      this.waypoints.push({ ...wp, altitude: wp.altitude || 50 })
+      this.missionUploaded = false
+      this.addEvent('info', `Waypoint ${this.waypoints.length} added`)
+      if (this.$refs.mapComponent) {
+        this.$refs.mapComponent.addWaypoints(this.waypoints)
+      }
+    },
+    clearWaypoints() {
+      this.waypoints = []
+      this.missionUploaded = false
+      if (this.$refs.mapComponent) {
+        this.$refs.mapComponent.addWaypoints([])
+      }
+      this.addEvent('info', 'Waypoints cleared')
+    },
+    async exportPlan() {
+      try {
+        const response = await fetch(`${API_BASE}/mission/export-plan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ waypoints: this.waypoints, name: 'AIS MVP Mission' }),
+        })
+        const data = await response.json()
+        if (data.success) {
+          const blob = new Blob([JSON.stringify(data.plan, null, 2)], { type: 'application/json' })
+          const url = URL.createObjectURL(blob)
+          const link = document.createElement('a')
+          link.href = url
+          link.download = 'mission.plan'
+          link.click()
+          URL.revokeObjectURL(url)
+          this.addEvent('success', 'Mission exported as .plan')
+        } else {
+          this.addEvent('error', data.error || 'Export failed')
+        }
+      } catch (e) {
+        this.addEvent('error', `Export error: ${e.message}`)
+      }
+    },
     async initializeBackend() {
       try {
         const response = await fetch(`${API_BASE}/health`)
@@ -210,9 +373,13 @@ export default {
         }
       }, 100) // 10 Hz
     },
-    async uploadTestMission() {
+    async uploadMission() {
       try {
-        this.addEvent('info', 'Validating mission...')
+        if (this.waypoints.length < 2) {
+          this.addEvent('error', 'Add at least 2 waypoints')
+          return
+        }
+        this.addEvent('info', 'Validating mission (incl. NFZ)...')
 
         // Validate
         const validateResp = await fetch(`${API_BASE}/mission/validate`, {
@@ -222,7 +389,8 @@ export default {
         })
 
         if (!validateResp.ok) {
-          this.addEvent('error', 'Mission validation failed')
+          const err = await validateResp.json()
+          this.addEvent('error', err.error || 'Mission validation failed (NFZ?)')
           return
         }
 
@@ -574,6 +742,65 @@ export default {
 
 .btn-block {
   width: 100%;
+  margin-bottom: 0.5rem;
+}
+
+.btn-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.btn-row .btn {
+  flex: 1;
+  font-size: 0.78rem;
+  padding: 0.45rem;
+}
+
+.mission-tools {
+  margin-bottom: 0.75rem;
+}
+
+.flight-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.video-stub {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.video-placeholder {
+  background: linear-gradient(135deg, #1a1a2e, #0f3460);
+  height: 130px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  position: relative;
+}
+
+.video-placeholder p {
+  color: white;
+  font-weight: 600;
+  margin: 6px 0 0;
+}
+
+.rec-dot {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  color: #ef4444;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.upload-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 /* Events */

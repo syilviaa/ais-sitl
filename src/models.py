@@ -87,6 +87,9 @@ class TelemetrySnapshot:
     # Ground distance
     ground_distance_m: float = 0.0   # Distance from home (meters)
 
+    # MAVLink polling latency (inter-packet interval, ms)
+    latency_ms: float = 0.0
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
@@ -123,6 +126,32 @@ class TelemetrySnapshot:
                 "in_air": self.in_air,
                 "ground_distance": self.ground_distance_m,
             },
+            "latency_ms": self.latency_ms,
+        }
+
+    def to_api_dict(self) -> dict:
+        """Flat dict for REST API and dashboard (10 Hz polling)."""
+        return {
+            "timestamp": self.timestamp,
+            "lat": self.lat,
+            "lon": self.lon,
+            "alt": self.altitude_m,
+            "alt_msl": self.altitude_msl_m,
+            "vx": self.vx,
+            "vy": self.vy,
+            "vz": self.vz,
+            "speed": self.speed_m_s,
+            "roll": self.roll_deg,
+            "pitch": self.pitch_deg,
+            "yaw": self.yaw_deg,
+            "battery": self.battery_percent,
+            "battery_voltage": self.battery_voltage_v,
+            "gps_status": self.gps_fix,
+            "satellites": self.satellites,
+            "armed": self.armed,
+            "mode": self.flight_mode,
+            "in_air": self.in_air,
+            "latency_ms": self.latency_ms,
         }
 
 

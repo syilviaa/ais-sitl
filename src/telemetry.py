@@ -92,6 +92,7 @@ class TelemetryCollector:
         # Statistics
         self._update_count = 0
         self._last_update_time = time.time()
+        self._latency_samples: deque = deque(maxlen=100)
 
         logger.info(f"TelemetryCollector initialized at {rate_hz} Hz")
 
@@ -150,6 +151,9 @@ class TelemetryCollector:
         """Get collection statistics."""
         elapsed = time.time() - self._last_update_time
         actual_rate = self._update_count / elapsed if elapsed > 0 else 0
+        samples = list(self._latency_samples)
+        avg_latency = sum(samples) / len(samples) if samples else 0.0
+        max_latency = max(samples) if samples else 0.0
 
         return {
             "updates": self._update_count,
@@ -157,6 +161,10 @@ class TelemetryCollector:
             "target_rate_hz": self._rate_hz,
             "history_size": len(self._history),
             "collecting": self._collecting,
+            "avg_latency_ms": round(avg_latency, 2),
+            "max_latency_ms": round(max_latency, 2),
+            "rtt_target_ms": 50.0,
+            "rtt_ok": max_latency < 50.0 if samples else True,
         }
 
     # ========================================================================
@@ -199,6 +207,12 @@ class TelemetryCollector:
                 snapshot = await self._collect_snapshot()
 
                 if snapshot:
+                    now = time.time()
+                    interval_ms = (now - self._last_update_time) * 1000.0
+                    self._last_update_time = now
+                    snapshot.latency_ms = interval_ms
+                    self._latency_samples.append(interval_ms)
+
                     self._latest_snapshot = snapshot
                     self._history.append(snapshot)
                     self._update_count += 1

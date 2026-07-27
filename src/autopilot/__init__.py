@@ -3,8 +3,8 @@
 try:
     from .plane import Drone, Plane
     __all__ = ["Drone", "Plane"]
-except ImportError:
-    # MAVSDK not available in production
+except (ImportError, SystemExit, Exception):
+    # MAVSDK not available in production / test environments
     Drone = None
     Plane = None
     __all__ = []

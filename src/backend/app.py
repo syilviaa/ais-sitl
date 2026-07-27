@@ -15,7 +15,10 @@ Timeline: Development in progress
 """
 
 import asyncio
+import json
 import logging
+from pathlib import Path
+
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
@@ -32,6 +35,7 @@ from src.backend.services.recording_service import RecordingService
 from src.backend.services.geofence_service import GeofenceService
 from src.backend.services.metrics_service import MetricsService
 from src.backend import database
+from src.autopilot.geofence import GeofenceValidator
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +114,30 @@ def create_app(config=None):
         """Run the existing async collector in one SocketIO background task."""
         asyncio.run(service.run_forever())
 
+    def run_failsafe_service(service):
+        """Run failsafe monitor in background."""
+        asyncio.run(service.start())
+
+    async def geofence_telemetry_guard(snapshot):
+        """Hold position if drone enters an active NFZ (TZ §2.3)."""
+        if snapshot is None or not app.drone_service.drone:
+            return
+        validator = GeofenceValidator()
+        if not validator.loaded:
+            validator.load_nfz_zones()
+        lat = getattr(snapshot, "lat", None) or snapshot.get("lat")
+        lon = getattr(snapshot, "lon", None) or snapshot.get("lon")
+        alt = getattr(snapshot, "altitude_m", None) or snapshot.get("alt", 0)
+        if lat is None:
+            return
+        in_nfz, zone_name = validator.check_point_in_nfz(lat, lon, alt)
+        if in_nfz and not getattr(app, "_geofence_hold_active", False):
+            app._geofence_hold_active = True
+            logger.warning("NFZ breach in %s — holding position", zone_name)
+            await app.drone_service.hold_position()
+        elif not in_nfz:
+            app._geofence_hold_active = False
+
     # =====================================================================
     # HEALTH CHECK
     # =====================================================================
@@ -160,14 +188,23 @@ def create_app(config=None):
             app.mission_service = MissionServiceAPI(mavsdk_system)
             if app.telemetry_service is None:
                 app.telemetry_service = TelemetryServiceAPI(mavsdk_system)
+                app.telemetry_service.collector.on_telemetry(geofence_telemetry_guard)
                 configure_telemetry_service(app.telemetry_service)
                 socketio.start_background_task(
                     run_telemetry_service, app.telemetry_service
                 )
             app.failsafe_service = FailsafeServiceAPI(
                 app.drone_service.drone,
-                None  # Will init telemetry separately
+                app.telemetry_service.collector if app.telemetry_service else None,
             )
+            if app.telemetry_service and app.drone_service.drone:
+                try:
+                    asyncio.run(app.failsafe_service.initialize())
+                    socketio.start_background_task(
+                        run_failsafe_service, app.failsafe_service
+                    )
+                except Exception as fs_exc:
+                    logger.warning("Failsafe not started: %s", fs_exc)
 
             return jsonify({
                 "success": True,
@@ -293,6 +330,18 @@ def create_app(config=None):
 
         waypoints = request.json.get('waypoints', []) if request.json else []
         result = asyncio.run(app.mission_service.upload_mission(waypoints))
+        return jsonify(result)
+
+    @app.route('/api/mission/export-plan', methods=['POST'])
+    @error_handler
+    def mission_export_plan():
+        """Export mission as QGroundControl .plan JSON (TZ §3.2)."""
+        if not app.mission_service:
+            return jsonify({"error": "Mission service not initialized"}), 500
+        data = request.json or {}
+        waypoints = data.get('waypoints', [])
+        name = data.get('name', 'AIS Mission')
+        result = asyncio.run(app.mission_service.export_plan(waypoints, name=name))
         return jsonify(result)
 
     @app.route('/api/mission/start', methods=['POST'])
@@ -564,6 +613,17 @@ def create_app(config=None):
         """Get geofence zone details."""
         result = asyncio.run(app.geofence_service.get_zone(zone_name))
         return jsonify(result)
+
+    @app.route('/api/geofence/geojson', methods=['GET'])
+    @error_handler
+    def geofence_geojson():
+        """Return NFZ zones as GeoJSON for dashboard map (TZ §3.1)."""
+        nfz_path = Path(__file__).resolve().parents[2] / "config" / "nfz_zones.geojson"
+        try:
+            with nfz_path.open(encoding="utf-8") as source:
+                return jsonify(json.load(source))
+        except OSError as exc:
+            return jsonify({"error": str(exc), "type": "FeatureCollection", "features": []}), 404
 
     @app.route('/api/geofence/list', methods=['GET'])
     @error_handler

@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
 COPY src/ ./src/
+COPY config/ ./config/
 COPY wsgi.py .
 COPY run_backend.py .
 COPY start.sh .
