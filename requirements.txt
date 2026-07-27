@@ -38,5 +38,8 @@ flake8>=6.1.0
 # Performance monitoring
 psutil>=5.9.0
 
+# MAVLink protocol inspection (TZ §2), used by /api/mavlink/probe
+pymavlink>=2.4.40
+
 # Optional: MAVSDK for local SITL testing
 # mavsdk>=3.0.0 (uncomment for local development)

@@ -61,7 +61,7 @@ class MissionServiceAPI:
                     waypoint = Waypoint(
                         lat=wp["lat"],
                         lon=wp["lon"],
-                        altitude_m=wp.get("altitude", 50.0),
+                        altitude_m=wp.get("altitude", wp.get("alt", 50.0)),
                         speed_m_s=wp.get("speed", 5.0),
                         wait_time_s=wp.get("wait_time", 0.0),
                         gimbal_pitch_deg=wp.get("gimbal_pitch", 0.0),
@@ -146,7 +146,7 @@ class MissionServiceAPI:
                 Waypoint(
                     lat=wp["lat"],
                     lon=wp["lon"],
-                    altitude_m=wp.get("altitude", 50.0),
+                    altitude_m=wp.get("altitude", wp.get("alt", 50.0)),
                     speed_m_s=wp.get("speed", 5.0),
                     wait_time_s=wp.get("wait_time", 0.0),
                 )

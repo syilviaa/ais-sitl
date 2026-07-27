@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -60,8 +62,21 @@ def probe_udp_port(port: int, seconds: float = 1.0) -> int:
 class VideoRelay:
     """Decode Gazebo RTP/H.264 and expose latest JPEG frame."""
 
-    def __init__(self, port: int = 5600):
+    def __init__(
+        self,
+        port: int = 5600,
+        width: int = 640,
+        height: int = 480,
+        fps: int = 15,
+        quality: int = 70,
+    ):
+        # Gazebo streams 1280x960; decoding and re-encoding it at full rate
+        # starves PX4 of CPU, which shows up as MAVLink heartbeat timeouts.
         self.port = port
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.quality = quality
         self._gst: Optional[str] = find_gst_launch()
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
@@ -95,12 +110,51 @@ class VideoRelay:
             "relay_running": self._running,
             "has_frame": has_frame,
             "frame_age_s": round(age, 2) if age is not None else None,
+            "output": f"{self.width}x{self.height}@{self.fps}",
             "error": self._error,
         }
+
+    def _reap_stale_relays(self) -> int:
+        """Kill leftover gst-launch relays from a hard-killed backend.
+
+        They keep SO_REUSEADDR on the video port, so the kernel splits incoming
+        RTP between them and the live relay and neither can decode a full frame.
+        """
+        mine = self._proc.pid if self._proc else None
+        killed = 0
+        try:
+            listing = subprocess.run(
+                ["pgrep", "-af", "gst-launch"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return 0
+        for line in listing.stdout.splitlines():
+            pid_text, _, command = line.partition(" ")
+            if f"port={self.port}" not in command:
+                continue
+            try:
+                pid = int(pid_text)
+            except ValueError:
+                continue
+            if pid == mine:
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed += 1
+            except OSError:
+                continue
+        if killed:
+            logger.info("Reaped %d stale video relay process(es)", killed)
+        return killed
 
     def start(self) -> bool:
         if self._running:
             return True
+        self._reap_stale_relays()
         self._ensure_gst()
         if not self._gst:
             self._error = (
@@ -122,10 +176,19 @@ class VideoRelay:
             "!",
             "avdec_h264",
             "!",
+            "videorate",
+            "!",
+            f"video/x-raw,framerate={self.fps}/1",
+            "!",
+            "videoscale",
+            "method=nearest-neighbour",
+            "!",
+            f"video/x-raw,width={self.width},height={self.height}",
+            "!",
             "videoconvert",
             "!",
             "jpegenc",
-            "quality=85",
+            f"quality={self.quality}",
             "!",
             "queue",
             "max-size-buffers=2",
@@ -236,4 +299,11 @@ class VideoRelay:
 
 
 _default_port = int(os.environ.get("VIDEO_UDP_PORT", "5600"))
-video_relay = VideoRelay(port=_default_port)
+video_relay = VideoRelay(
+    port=_default_port,
+    width=int(os.environ.get("VIDEO_WIDTH", "640")),
+    height=int(os.environ.get("VIDEO_HEIGHT", "480")),
+    fps=int(os.environ.get("VIDEO_FPS", "15")),
+    quality=int(os.environ.get("VIDEO_JPEG_QUALITY", "70")),
+)
+atexit.register(video_relay.stop)

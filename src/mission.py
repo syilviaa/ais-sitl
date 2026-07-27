@@ -70,6 +70,8 @@ class MissionService:
         self._current_mission_items: List[MissionItem] = []
         self._on_progress_callbacks: List[Callable] = []
         self._last_upload_error: Optional[str] = None
+        self._progress: Optional[MissionProgress] = None
+        self._progress_task: Optional[asyncio.Task] = None
 
         logger.info("MissionService initialized")
 
@@ -98,6 +100,8 @@ class MissionService:
         # Convert waypoints to MissionItems
         mission_items = [MissionItem.from_waypoint(wp) for wp in waypoints]
         self._current_mission_items = mission_items
+        self.stop_progress_watcher()
+        self._progress = None
 
         # Upload to autopilot
         if not MAVSDK_AVAILABLE or not self._system:
@@ -121,11 +125,33 @@ class MissionService:
             except Exception as clear_exc:
                 logger.debug("clear_mission: %s", clear_exc)
 
+            # The first item is a TAKEOFF, and PX4 climbs to MIS_TAKEOFF_ALT
+            # (50 m by default) for it rather than to the waypoint altitude.
+            try:
+                await self._system.param.set_param_float(
+                    "MIS_TAKEOFF_ALT", float(waypoints[0].altitude_m)
+                )
+            except Exception as param_exc:
+                logger.debug("MIS_TAKEOFF_ALT: %s", param_exc)
+
+            fastest = max(wp.speed_m_s for wp in waypoints)
+            try:
+                await self._system.param.set_param_float(
+                    "MPC_XY_VEL_MAX", float(max(fastest + 3.0, 12.0))
+                )
+            except Exception as param_exc:
+                logger.debug("MPC_XY_VEL_MAX: %s", param_exc)
+
+            # A mission that opens with a takeoff item is rejected outright
+            # while the vehicle is flying: "Switching to Mission is currently
+            # not available". Only lead with a takeoff from the ground.
+            airborne = await self._is_airborne()
+
             mav_items = []
             for index, wp in enumerate(waypoints):
                 vehicle_action = (
                     MavMissionItem.VehicleAction.TAKEOFF
-                    if index == 0
+                    if index == 0 and not airborne
                     else MavMissionItem.VehicleAction.NONE
                 )
                 mav_items.append(
@@ -183,9 +209,14 @@ class MissionService:
             return True
 
         try:
+            # PX4 will not enter mission mode on its own from a disarmed state.
+            if not await self._is_armed():
+                logger.info("Arming for mission start")
+                await self._system.action.arm()
             await self._system.mission.start_mission()
             logger.info("✅ Mission started")
             self._mission_running = True
+            self._start_progress_watcher()
             return True
 
         except Exception as e:
@@ -237,6 +268,7 @@ class MissionService:
         """Abort mission and return to launch."""
         logger.warning("Aborting mission - RTL")
         self._mission_running = False
+        self.stop_progress_watcher()
 
         if not MAVSDK_AVAILABLE or not self._system:
             return True
@@ -254,6 +286,58 @@ class MissionService:
     # Mission Progress
     # ========================================================================
 
+    async def _read_stream_once(self, stream_factory, timeout: float = 3.0):
+        """Read a single value from a MAVSDK stream and release the subscription."""
+        stream = stream_factory()
+        try:
+            return await asyncio.wait_for(stream.__anext__(), timeout)
+        except Exception:
+            return None
+        finally:
+            await stream.aclose()
+
+    async def _is_airborne(self) -> bool:
+        in_air = await self._read_stream_once(self._system.telemetry.in_air)
+        return bool(in_air)
+
+    async def _is_armed(self) -> bool:
+        armed = await self._read_stream_once(self._system.telemetry.armed)
+        return bool(armed)
+
+    def _start_progress_watcher(self) -> None:
+        """Keep one long-lived mission_progress subscription and cache it.
+
+        PX4 only publishes progress when the current item changes, so reading
+        the stream per request blocks forever once the mission is done.
+        """
+        if self._progress_task and not self._progress_task.done():
+            return
+        self._progress_task = asyncio.ensure_future(self._watch_progress())
+
+    async def _watch_progress(self) -> None:
+        stream = self._system.mission.mission_progress()
+        try:
+            async for progress in stream:
+                mission_progress = MissionProgress(
+                    current_waypoint=progress.current,
+                    total_waypoints=progress.total,
+                    is_mission_finished=progress.current >= progress.total,
+                )
+                self._progress = mission_progress
+                await self._notify_callbacks(mission_progress)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Mission progress stream ended: %s", e)
+        finally:
+            await stream.aclose()
+
+    def stop_progress_watcher(self) -> None:
+        """Release the mission_progress subscription."""
+        if self._progress_task and not self._progress_task.done():
+            self._progress_task.cancel()
+        self._progress_task = None
+
     async def get_progress(self) -> Optional[MissionProgress]:
         """
         Get current mission progress.
@@ -270,22 +354,15 @@ class MissionService:
             await self._notify_callbacks(mission_progress)
             return mission_progress
 
-        try:
-            async for progress in self._system.mission.mission_progress():
-                mission_progress = MissionProgress(
-                    current_waypoint=progress.current,
-                    total_waypoints=progress.total,
-                    is_mission_finished=progress.current >= progress.total,
-                )
-
-                # Notify callbacks
-                await self._notify_callbacks(mission_progress)
-
-                return mission_progress
-
-        except Exception as e:
-            logger.error(f"Failed to get mission progress: {e}")
-            return None
+        if self._mission_running:
+            self._start_progress_watcher()
+        if self._progress is not None:
+            return self._progress
+        return MissionProgress(
+            current_waypoint=0,
+            total_waypoints=len(self._current_mission_items),
+            is_mission_finished=False,
+        )
 
     async def is_mission_finished(self) -> bool:
         """Check if mission is complete."""

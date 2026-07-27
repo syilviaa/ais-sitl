@@ -201,8 +201,13 @@ export default {
         if (val) this.updateDronePosition(val)
       },
     },
-    waypoints(val) {
-      this.syncWaypoints(val || [])
+    waypoints: {
+      // In-place edits (drag, splice) keep the same array reference, so a
+      // shallow watcher would leave markers and the route line out of sync.
+      deep: true,
+      handler(val) {
+        this.syncWaypoints(val || [])
+      },
     },
     nfzGeoJson(val) {
       if (val) this.renderNfz(val)

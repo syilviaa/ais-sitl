@@ -134,6 +134,11 @@ class Drone:
     MIN_TAKEOFF_ALTITUDE_M = 0.5
     MAX_TAKEOFF_ALTITUDE_M = 120.0
     TELEMETRY_HZ = 10.0
+    # PX4 multicopter defaults the speed limits are scaled from.
+    DEFAULT_CRUISE_M_S = 5.0
+    DEFAULT_TAKEOFF_SPEED_M_S = 1.5
+    DEFAULT_LAND_SPEED_M_S = 0.7
+    MAX_CRUISE_M_S = 20.0
 
     def __init__(
         self,
@@ -340,6 +345,7 @@ class Drone:
                     self._connected = True
                     self._state = DroneState.CONNECTED
                     self._start_telemetry_collection()
+                    await self._relax_datalink_failsafe()
                     logger.info("Connected to PX4 SITL via %s", address)
                     return True
                 except (asyncio.TimeoutError, Exception) as error:
@@ -409,10 +415,18 @@ class Drone:
             return True
         return self._mavsdk_proc.poll() is None
 
-    async def ensure_link(self, timeout_s: float = 20.0) -> bool:
-        """Re-establish the MAVSDK link if mavsdk_server died, keeping the API usable."""
-        if not self._connected or self.link_alive():
-            return self._connected
+    async def ensure_link(
+        self, timeout_s: float = 20.0, force: bool = False
+    ) -> bool:
+        """Re-establish the MAVSDK link if mavsdk_server died or streams broke.
+
+        ``force`` also restarts a still-running server, which is needed when the
+        gRPC streams were torn down by a heartbeat timeout under heavy CPU load.
+        """
+        if not self._connected:
+            return False
+        if not force and self.link_alive():
+            return True
         tail = self._read_mavsdk_server_log().strip().splitlines()
         logger.warning(
             "mavsdk_server exited (%s) — reconnecting",
@@ -553,6 +567,52 @@ class Drone:
                 ) from error
             self._state = DroneState.READY
             return True
+
+    DATALINK_LOSS_TIMEOUT_S = 60
+
+    async def _relax_datalink_failsafe(self) -> None:
+        """Widen PX4's GCS-link timeout so a stalling simulation won't RTL.
+
+        Gazebo on a laptop dips well below real time; MAVSDK then declares the
+        system lost, stops sending heartbeats, and PX4's 10 s data-link failsafe
+        aborts the flight. The failsafe stays armed, just with more slack.
+        """
+        try:
+            await self._system.param.set_param_int(
+                "COM_DL_LOSS_T", self.DATALINK_LOSS_TIMEOUT_S
+            )
+        except Exception as exc:
+            logger.debug("COM_DL_LOSS_T not set: %s", exc)
+
+    async def set_flight_speed(self, cruise_m_s: float) -> Dict[str, float]:
+        """Scale PX4 speed limits around the requested cruise speed.
+
+        Mission items carry their own DO_CHANGE_SPEED, but PX4 still clamps them
+        to MPC_XY_VEL_MAX, so the ceiling has to move with the cruise speed.
+        """
+        self._require_connected()
+        if not isinstance(cruise_m_s, (int, float)) or isinstance(
+            cruise_m_s, bool
+        ):
+            raise ValueError("cruise_m_s must be a number")
+        if not 1.0 <= cruise_m_s <= self.MAX_CRUISE_M_S:
+            raise ValueError(
+                f"cruise_m_s must be between 1 and {self.MAX_CRUISE_M_S}"
+            )
+
+        ratio = cruise_m_s / self.DEFAULT_CRUISE_M_S
+        params = {
+            "MPC_XY_CRUISE": cruise_m_s,
+            "MPC_XY_VEL_MAX": min(cruise_m_s + 3.0, self.MAX_CRUISE_M_S + 3.0),
+            "MPC_TKO_SPEED": min(self.DEFAULT_TAKEOFF_SPEED_M_S * ratio, 5.0),
+            "MPC_LAND_SPEED": min(self.DEFAULT_LAND_SPEED_M_S * ratio, 2.0),
+        }
+        applied: Dict[str, float] = {}
+        for name, value in params.items():
+            await self._system.param.set_param_float(name, float(value))
+            applied[name] = round(float(value), 2)
+        logger.info("Flight speed set to %.1f m/s: %s", cruise_m_s, applied)
+        return applied
 
     async def hold_position(self) -> bool:
         """Command PX4 to hold its current position."""

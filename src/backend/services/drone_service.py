@@ -112,15 +112,15 @@ class DroneService:
                 self.drone = None
                 raise
 
-    async def ensure_link(self) -> bool:
+    async def ensure_link(self, force: bool = False) -> bool:
         """Recover a dead MAVSDK link. True when a new system object was created."""
         drone = self.drone
         if not drone or self.demo_mode or not hasattr(drone, "ensure_link"):
             return False
-        if drone.link_alive():
+        if not force and drone.link_alive():
             return False
         logger.warning("MAVSDK link lost — attempting recovery")
-        await drone.ensure_link()
+        await drone.ensure_link(force=force)
         return True
 
     async def disconnect(self):
@@ -258,6 +258,14 @@ class DroneService:
         except Exception as e:
             logger.error(f"RTL error: {e}")
             raise
+
+    async def set_flight_speed(self, cruise_m_s: float) -> Dict[str, Any]:
+        """Apply PX4 speed limits for the requested cruise speed."""
+        if not self.drone:
+            raise Exception("Drone not initialized")
+        if not hasattr(self.drone, "set_flight_speed"):
+            raise Exception("Speed control unavailable in demo mode")
+        return await self.drone.set_flight_speed(cruise_m_s)
 
     async def get_telemetry(self) -> Dict[str, Any]:
         """Get current telemetry snapshot."""

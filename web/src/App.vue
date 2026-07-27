@@ -76,6 +76,33 @@
               Очистить
             </button>
           </div>
+          <div class="speed-row">
+            <label for="cruise-speed">Скорость</label>
+            <input
+              id="cruise-speed"
+              v-model.number="cruiseSpeed"
+              type="range"
+              min="3"
+              max="18"
+              step="1"
+            />
+            <span class="speed-value">{{ cruiseSpeed }} м/с</span>
+            <button @click="applyFlightSpeed" class="btn btn-secondary btn-sm" :disabled="!droneReady">
+              Применить
+            </button>
+          </div>
+          <div class="speed-row">
+            <label for="wp-altitude">Высота точек</label>
+            <input
+              id="wp-altitude"
+              v-model.number="waypointAltitude"
+              type="range"
+              min="10"
+              max="120"
+              step="5"
+            />
+            <span class="speed-value">{{ waypointAltitude }} м</span>
+          </div>
           <div v-if="missionBlockReason" class="nfz-block">{{ missionBlockReason }}</div>
           <div class="btn-grid three">
             <button @click="validateMission" class="btn btn-secondary">Проверить</button>
@@ -168,6 +195,8 @@ export default {
       },
       missionValid: false,
       missionUploaded: false,
+      cruiseSpeed: 15,
+      waypointAltitude: 50,
       missionRunning: false,
       missionBlockReason: null,
       missionProgress: { current: 0, total: 0, percent: 0 },
@@ -381,16 +410,11 @@ export default {
       }
     },
     addWaypoint(wp) {
-      this.waypoints.push({ ...wp, altitude: wp.altitude || 50 })
+      this.waypoints.push({ ...wp, altitude: this.waypointAltitude })
       this.missionUploaded = false
       this.missionValid = false
       this.missionBlockReason = null
       this.addEvent('info', `Точка ${this.waypoints.length} добавлена`)
-      this.$nextTick(() => {
-        if (this.$refs.mapComponent) {
-          this.$refs.mapComponent.syncWaypoints(this.waypoints)
-        }
-      })
     },
     moveWaypoint({ index, lat, lon }) {
       if (this.waypoints[index]) {
@@ -456,7 +480,7 @@ export default {
         const response = await fetch(`${API_BASE}/mission/upload`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ waypoints: this.waypoints }),
+          body: JSON.stringify({ waypoints: this.waypoints, speed: this.cruiseSpeed }),
         })
         const data = await response.json()
         if (response.ok && data.success !== false) {
@@ -493,6 +517,23 @@ export default {
         }
       } catch (e) {
         this.addEvent('error', `Export: ${e.message}`)
+      }
+    },
+    async applyFlightSpeed() {
+      try {
+        const response = await fetch(`${API_BASE}/drone/flight-speed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cruise_m_s: this.cruiseSpeed }),
+        })
+        const data = await response.json()
+        if (response.ok && data.success) {
+          this.addEvent('success', `Скорость ${this.cruiseSpeed} м/с применена`)
+        } else {
+          this.addEvent('error', `Скорость: ${data.error || 'ошибка'}`)
+        }
+      } catch (e) {
+        this.addEvent('error', `Скорость: ${e.message}`)
       }
     },
     async startMission() {
@@ -711,6 +752,28 @@ export default {
 }
 
 .mission-row .btn { flex: 1; min-width: 0; }
+
+.speed-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+  font-size: 0.68rem;
+  color: var(--text-dim, #8fa3bf);
+}
+
+.speed-row input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent, #3ea6ff);
+}
+
+.speed-value {
+  min-width: 3.6rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text, #e6edf6);
+}
 
 .wp-summary {
   font-size: 0.68rem;

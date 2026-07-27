@@ -156,7 +156,8 @@ export default {
         }
         if (!res.ok) throw new Error(`snapshot ${res.status}`)
         const blob = await res.blob()
-        if (blob.size < 2000) return
+        // Downscaled frames of a flat Gazebo scene compress very small.
+        if (blob.size < 400) return
         if (this.objectUrl) URL.revokeObjectURL(this.objectUrl)
         this.objectUrl = URL.createObjectURL(blob)
         const img = this.$refs.videoImg

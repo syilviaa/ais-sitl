@@ -19,9 +19,35 @@ VIDEO_PORT="${VIDEO_UDP_PORT:-5600}"
 HOME_LAT="${PX4_HOME_LAT:-51.1694}"
 HOME_LON="${PX4_HOME_LON:-71.4491}"
 HOME_ALT="${PX4_HOME_ALT:-0}"
+# Docker on macOS has no GPU, so the camera sensor is software-rendered. At the
+# stock 1280x960@30 that drags Gazebo down to ~0.1x real time, which starves
+# PX4's MAVLink heartbeat and trips the data-link failsafe mid-flight.
+CAM_WIDTH="${PX4_CAM_WIDTH:-640}"
+CAM_HEIGHT="${PX4_CAM_HEIGHT:-480}"
+CAM_FPS="${PX4_CAM_FPS:-10}"
+CAM_SDF="/opt/px4-gazebo/share/gz/models/mono_cam/model.sdf"
 
-run_gazebo() {
-  docker run "$@" \
+# Rewrite the camera sensor before Gazebo reads it: create the container,
+# patch the model, then start it.
+patch_camera() {
+  local workdir
+  workdir="$(mktemp -d)"
+  if ! docker cp "${NAME}:${CAM_SDF}" "${workdir}/model.sdf" 2>/dev/null; then
+    rm -rf "${workdir}"
+    echo "  Камера:       не удалось патчить SDF, остаётся 1280x960@30" >&2
+    return 0
+  fi
+  perl -0pi -e "
+    s|<width>\\d+</width>|<width>${CAM_WIDTH}</width>|;
+    s|<height>\\d+</height>|<height>${CAM_HEIGHT}</height>|;
+    s|<update_rate>\\d+</update_rate>|<update_rate>${CAM_FPS}</update_rate>|;
+  " "${workdir}/model.sdf"
+  docker cp "${workdir}/model.sdf" "${NAME}:${CAM_SDF}"
+  rm -rf "${workdir}"
+}
+
+create_gazebo() {
+  docker create --name "$NAME" \
     --add-host=host.docker.internal:host-gateway \
     -e HEADLESS=1 \
     -e "PX4_SIM_MODEL=${MODEL}" \
@@ -32,7 +58,7 @@ run_gazebo() {
     -e "PX4_VIDEO_HOST_IP=host.docker.internal" \
     -p 14550:14550/udp \
     -p 14580:14580/udp \
-    "$IMAGE"
+    "$IMAGE" >/dev/null
 }
 
 stop_container() {
@@ -54,21 +80,28 @@ case "${1:-start}" in
   --fg|fg)
     stop_conflicts
     stop_container
-    exec run_gazebo --rm --name "$NAME"
+    create_gazebo
+    patch_camera
+    exec docker start -a "$NAME"
     ;;
   start|"")
     stop_conflicts
     stop_container
     echo "Загрузка образа ${IMAGE} (≈650 MB при первом запуске)..."
     docker pull "$IMAGE" >/dev/null 2>&1 || docker pull "$IMAGE"
-    run_gazebo -d --name "$NAME"
+    create_gazebo
+    patch_camera
+    docker start "$NAME" >/dev/null
     echo "Gazebo SITL: $NAME"
     echo "  Модель:       ${MODEL} (камера → UDP ${VIDEO_PORT} H.264/RTP)"
+    echo "  Камера:       ${CAM_WIDTH}x${CAM_HEIGHT}@${CAM_FPS} (софт-рендер без GPU)"
+    echo "                PX4_CAM_WIDTH/HEIGHT/FPS меняют разрешение"
     echo "  Мир:          ${WORLD}"
     if [[ "${WORLD}" == "default" ]]; then
-      echo "                (пустая серая площадка — картинка с камеры почти однотонная)"
-      echo "                PX4_GZ_WORLD=lawn|forest|ridge|baylands ./scripts/start-px4-gazebo.sh"
-      echo "                lawn — лёгкий, forest/ridge — детальнее, baylands — тяжёлый"
+      echo "                (пустая площадка — зато симуляция идёт ~0.76x реального времени)"
+      echo "                PX4_GZ_WORLD=lawn|forest|ridge ./scripts/start-px4-gazebo.sh"
+      echo "                картинка красивее, но lawn роняет скорость симуляции до ~0.36x,"
+      echo "                а на медленной симуляции PX4 срывается в RTL по потере связи"
     fi
     echo "  Дом:          ${HOME_LAT}, ${HOME_LON} alt ${HOME_ALT} m"
     echo "  MAVLink:      14550 (QGC), 14580 onboard, 14540 — host/MAVSDK"

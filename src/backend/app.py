@@ -159,18 +159,41 @@ def create_app(config=None):
         elif not in_nfz:
             app._geofence_hold_active = False
 
-    async def recover_mavsdk_link() -> bool:
+    async def recover_mavsdk_link(force: bool = False) -> bool:
         """Reconnect a dead MAVSDK link and re-point services at the new system."""
-        if not await app.drone_service.ensure_link():
+        if not await app.drone_service.ensure_link(force=force):
             return False
         drone = app.drone_service.drone
         system = getattr(drone, "_system", None) if drone else None
         if app.mission_service:
+            app.mission_service.service.stop_progress_watcher()
             app.mission_service.service._system = system
         if app.telemetry_service:
             await app.telemetry_service.collector.rebind_system(system)
         logger.info("MAVSDK link recovered — services rebound")
         return True
+
+    def is_link_lost(error: Exception) -> bool:
+        text = str(error)
+        return any(
+            marker in text
+            for marker in ("UNAVAILABLE", "Socket closed", "Connection refused")
+        )
+
+    def run_with_link_retry(make_coro, timeout: float = 120):
+        """Run a MAVSDK command, retrying once across a dropped gRPC link.
+
+        Heavy Gazebo load can delay PX4 heartbeats past MAVSDK's 3 s window,
+        which tears down the gRPC streams in the middle of a command.
+        """
+        try:
+            return run_async(make_coro(), timeout=timeout)
+        except Exception as error:
+            if not is_link_lost(error):
+                raise
+            logger.warning("MAVSDK link dropped mid-command — reconnecting")
+            run_async(recover_mavsdk_link(force=True), timeout=60)
+            return run_async(make_coro(), timeout=timeout)
 
     def bind_telemetry_source(collector, drone):
         """Feed the collector from the drone's own streams, never a second set."""
@@ -415,7 +438,7 @@ def create_app(config=None):
     def drone_arm():
         """Arm motors."""
         try:
-            run_async(app.drone_service.arm())
+            run_with_link_retry(app.drone_service.arm)
             return jsonify({"success": True, "message": "Armed"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -425,7 +448,7 @@ def create_app(config=None):
     def drone_disarm():
         """Disarm motors."""
         try:
-            run_async(app.drone_service.disarm())
+            run_with_link_retry(app.drone_service.disarm)
             return jsonify({"success": True, "message": "Disarmed"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -436,8 +459,8 @@ def create_app(config=None):
         """Takeoff to altitude."""
         altitude = request.json.get('altitude', 50) if request.json else 50
         try:
-            run_async(
-                app.drone_service.takeoff(altitude),
+            run_with_link_retry(
+                lambda: app.drone_service.takeoff(altitude),
                 timeout=90 + 2 * float(altitude),
             )
             return jsonify({
@@ -453,7 +476,7 @@ def create_app(config=None):
     def drone_land():
         """Land at current position."""
         try:
-            run_async(app.drone_service.land(), timeout=240)
+            run_with_link_retry(app.drone_service.land, timeout=240)
             return jsonify({"success": True, "message": "Landing"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -463,7 +486,7 @@ def create_app(config=None):
     def drone_hold():
         """Hold position (hover)."""
         try:
-            run_async(app.drone_service.hold_position())
+            run_with_link_retry(app.drone_service.hold_position)
             return jsonify({"success": True, "message": "Holding position"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -477,11 +500,31 @@ def create_app(config=None):
             if request.json else 'api_request'
         )
         try:
-            run_async(app.drone_service.return_to_launch(reason=reason))
+            run_with_link_retry(
+                lambda: app.drone_service.return_to_launch(reason=reason)
+            )
             return jsonify({
                 "success": True,
                 "message": "RTL initiated",
                 "reason": reason,
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route('/api/drone/flight-speed', methods=['POST'])
+    @error_handler
+    def drone_flight_speed():
+        """Set cruise speed and scale takeoff/landing rates with it."""
+        data = request.json or {}
+        cruise = data.get('cruise_m_s', data.get('cruise', 15))
+        try:
+            applied = run_with_link_retry(
+                lambda: app.drone_service.set_flight_speed(float(cruise))
+            )
+            return jsonify({
+                "success": True,
+                "cruise_m_s": float(cruise),
+                "params": applied,
             })
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -508,11 +551,20 @@ def create_app(config=None):
         if not app.mission_service:
             return jsonify({"error": "Mission service not initialized"}), 500
 
-        waypoints = request.json.get('waypoints', []) if request.json else []
+        payload = request.json or {}
+        waypoints = payload.get('waypoints', [])
+        speed = payload.get('speed')
+        if speed:
+            waypoints = [
+                {**wp, 'speed': wp.get('speed') or float(speed)}
+                for wp in waypoints
+            ]
         run_async(recover_mavsdk_link(), timeout=60)
-        result = run_async(app.mission_service.upload_mission(waypoints))
+        result = run_with_link_retry(
+            lambda: app.mission_service.upload_mission(waypoints)
+        )
         if result.get("error_type") == "link_lost":
-            if run_async(recover_mavsdk_link(), timeout=60):
+            if run_async(recover_mavsdk_link(force=True), timeout=60):
                 result = run_async(app.mission_service.upload_mission(waypoints))
         return jsonify(result)
 
@@ -535,7 +587,7 @@ def create_app(config=None):
         if not app.mission_service:
             return jsonify({"error": "Mission service not initialized"}), 500
 
-        result = run_async(app.mission_service.start_mission())
+        result = run_with_link_retry(app.mission_service.start_mission)
         return jsonify(result)
 
     @app.route('/api/mission/pause', methods=['POST'])
