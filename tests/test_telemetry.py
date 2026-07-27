@@ -38,8 +38,8 @@ class TestTelemetryCollector:
         snapshot = collector._get_stub_telemetry()
 
         assert snapshot is not None
-        assert snapshot.lat == 47.39770
-        assert snapshot.lon == 8.54550
+        assert snapshot.lat == 51.1694
+        assert snapshot.lon == 71.4491
         assert snapshot.battery_percent == 100.0
         assert snapshot.gps_fix == "3d"
 
@@ -278,8 +278,8 @@ class TestTelemetryIntegration:
         history = collector.get_history(count=10)
 
         # In stub mode, GPS should be constant
-        assert all(s.lat == 47.39770 for s in history)
-        assert all(s.lon == 8.54550 for s in history)
+        assert all(s.lat == 51.1694 for s in history)
+        assert all(s.lon == 71.4491 for s in history)
         assert all(s.battery_percent == 100.0 for s in history)
 
 

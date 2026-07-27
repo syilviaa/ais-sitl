@@ -15,6 +15,7 @@ from typing import Optional, Dict, Any
 
 try:
     from src.autopilot.plane import Drone, DroneState
+    from src.autopilot.demo_drone import DemoDrone
     from src.mavsdk_import import IMPORT_ERROR, MAVSDK_AVAILABLE, mavsdk_server_available
     HAS_MAVSDK = MAVSDK_AVAILABLE
 except (ImportError, AttributeError, SystemExit):
@@ -22,6 +23,7 @@ except (ImportError, AttributeError, SystemExit):
     IMPORT_ERROR = "Drone module unavailable"
     Drone = None
     DroneState = None
+    DemoDrone = None
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +34,7 @@ class DroneService:
     def __init__(self):
         """Initialize drone service."""
         self.drone: Optional[Drone] = None
+        self.demo_mode: bool = False
         self._lock: Optional[asyncio.Lock] = None
         self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -41,6 +44,23 @@ class DroneService:
             self._lock = asyncio.Lock()
             self._lock_loop = loop
         return self._lock
+
+    async def initialize_demo(self):
+        """Initialize demo drone (no PX4 SITL required)."""
+        if DemoDrone is None:
+            raise RuntimeError("Demo drone unavailable")
+
+        async with self._get_lock():
+            if self.drone is not None:
+                return True
+
+            logger.info("Initializing demo drone (Astana training field)...")
+            drone = DemoDrone()
+            await drone.connect(timeout_s=5.0)
+            self.drone = drone  # type: ignore[assignment]
+            self.demo_mode = True
+            logger.info("✅ Demo drone initialized")
+            return True
 
     async def initialize(
         self,
@@ -73,6 +93,7 @@ class DroneService:
             try:
                 await drone.connect(timeout_s=20.0)
                 self.drone = drone
+                self.demo_mode = False
                 logger.info("✅ Drone initialized")
                 return True
             except Exception as e:
@@ -91,6 +112,7 @@ class DroneService:
                     logger.error(f"Disconnect error: {e}")
                 finally:
                     self.drone = None
+                    self.demo_mode = False
 
     async def get_status(self) -> Dict[str, Any]:
         """Get current drone status."""

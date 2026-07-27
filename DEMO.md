@@ -6,7 +6,9 @@
 - **Node.js 18+**
 - **PX4 SITL** локально (UDP onboard 14580 → remote 14540)
 
-## 1. PX4 SITL
+## 1. PX4 SITL (optional)
+
+Real SITL for live MAVLink. If unavailable, dashboard falls back to **demo mode** automatically.
 
 Запустите SITL на машине, где будет backend. После неудачных connect — **перезапустите SITL**.
 
@@ -19,8 +21,16 @@
 ## 2. Backend
 
 ```bash
-chmod +x scripts/start-backend.sh
+chmod +x scripts/setup-dev.sh scripts/start-backend.sh
+./scripts/setup-dev.sh    # first time: Python 3.11 + MAVSDK
 ./scripts/start-backend.sh
+```
+
+Demo-only (no SITL):
+```bash
+curl -X POST http://127.0.0.1:5000/api/drone/initialize \
+  -H 'Content-Type: application/json' \
+  -d '{"demo":true}'
 ```
 
 Проверка:

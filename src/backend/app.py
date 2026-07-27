@@ -17,6 +17,7 @@ Timeline: Development in progress
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 
 from flask import Flask, jsonify, request
@@ -146,6 +147,44 @@ def create_app(config=None):
         elif not in_nfz:
             app._geofence_hold_active = False
 
+    def finish_drone_services():
+        """Wire mission, telemetry, failsafe after drone connect."""
+        drone = app.drone_service.drone
+        mavsdk_system = getattr(drone, "_system", None) if drone else None
+        app.mission_service = MissionServiceAPI(mavsdk_system)
+        if app.telemetry_service is None:
+            app.telemetry_service = TelemetryServiceAPI(mavsdk_system)
+            if app.drone_service.demo_mode and drone:
+                app.telemetry_service.collector.set_demo_drone(drone)
+            app.telemetry_service.collector.on_telemetry(geofence_telemetry_guard)
+            configure_telemetry_service(app.telemetry_service)
+            socketio.start_background_task(
+                run_telemetry_service, app.telemetry_service
+            )
+        elif app.drone_service.demo_mode and drone:
+            app.telemetry_service.collector.set_demo_drone(drone)
+
+        app.failsafe_service = FailsafeServiceAPI(
+            app.drone_service.drone,
+            app.telemetry_service.collector if app.telemetry_service else None,
+        )
+        if app.telemetry_service and app.drone_service.drone:
+            if not app.drone_service.demo_mode:
+                try:
+                    run_async(app.failsafe_service.initialize())
+                    socketio.start_background_task(
+                        run_failsafe_service, app.failsafe_service
+                    )
+                except Exception as fs_exc:
+                    logger.warning("Failsafe not started: %s", fs_exc)
+
+        if app.telemetry_service:
+            for client_id in list(app.pending_telemetry_clients):
+                app.telemetry_service.register_client(client_id)
+            app.pending_telemetry_clients.clear()
+
+    app.finish_drone_services = finish_drone_services
+
     # =====================================================================
     # HEALTH CHECK
     # =====================================================================
@@ -177,6 +216,7 @@ def create_app(config=None):
             'version': '0.1.0',
             'veha': 4,
             'drone_connected': app.drone_service.is_connected(),
+            'demo_mode': app.drone_service.demo_mode,
             'mavsdk_available': MAVSDK_AVAILABLE,
             'mavsdk_error': None if MAVSDK_AVAILABLE else IMPORT_ERROR,
             'mavsdk_server_available': mavsdk_server_available(),
@@ -194,52 +234,33 @@ def create_app(config=None):
         host = data.get('host', '127.0.0.1')
         port = int(data.get('port', 14540))
         sitl_port = int(data.get('sitl_port', 14580))
+        demo = bool(
+            data.get('demo')
+            or os.environ.get('AIS_DEMO', '').lower() in ('1', 'true', 'yes')
+        )
 
         try:
-            if not mavsdk_server_available():
-                raise RuntimeError(MavsdkServerHint)
-            run_async(
-                app.drone_service.initialize(
-                    host=host,
-                    port=port,
-                    sitl_port=sitl_port,
-                ),
-                timeout=45,
-            )
-
-            # Initialize other services
-            drone = app.drone_service.drone
-            mavsdk_system = drone._system if drone else None
-            app.mission_service = MissionServiceAPI(mavsdk_system)
-            if app.telemetry_service is None:
-                app.telemetry_service = TelemetryServiceAPI(mavsdk_system)
-                app.telemetry_service.collector.on_telemetry(geofence_telemetry_guard)
-                configure_telemetry_service(app.telemetry_service)
-                socketio.start_background_task(
-                    run_telemetry_service, app.telemetry_service
+            if demo:
+                run_async(app.drone_service.initialize_demo(), timeout=15)
+            else:
+                if not mavsdk_server_available():
+                    raise RuntimeError(MavsdkServerHint)
+                run_async(
+                    app.drone_service.initialize(
+                        host=host,
+                        port=port,
+                        sitl_port=sitl_port,
+                    ),
+                    timeout=45,
                 )
-            app.failsafe_service = FailsafeServiceAPI(
-                app.drone_service.drone,
-                app.telemetry_service.collector if app.telemetry_service else None,
-            )
-            if app.telemetry_service and app.drone_service.drone:
-                try:
-                    run_async(app.failsafe_service.initialize())
-                    socketio.start_background_task(
-                        run_failsafe_service, app.failsafe_service
-                    )
-                except Exception as fs_exc:
-                    logger.warning("Failsafe not started: %s", fs_exc)
 
-            if app.telemetry_service:
-                for client_id in list(app.pending_telemetry_clients):
-                    app.telemetry_service.register_client(client_id)
-                app.pending_telemetry_clients.clear()
+            finish_drone_services()
 
             return jsonify({
                 "success": True,
-                "message": "Drone initialized",
+                "message": "Demo drone initialized" if demo else "Drone initialized",
                 "connected": True,
+                "demo_mode": app.drone_service.demo_mode,
             })
         except Exception as e:
             logger.exception(

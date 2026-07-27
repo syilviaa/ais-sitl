@@ -112,22 +112,16 @@ def test_disconnect_removes_subscription(app_and_socketio):
     assert not service.clients
 
 
-def test_missing_service_emits_socketio_error():
+def test_missing_service_emits_pending_telemetry_started():
     app, socketio = create_app({"TESTING": True})
-
-    def capture_eio_packet(eio_sid, eio_packet):
-        socketio.server._send_packet(
-            eio_sid, packet.Packet(encoded_packet=eio_packet.data)
-        )
-
-    socketio.server._send_eio_packet = capture_eio_packet
     client = socketio.test_client(app)
     client.get_received()
     client.emit("start_telemetry")
-    errors = received_events(client, "telemetry_error")
-    assert errors[0]["args"][0]["message"] == (
-        "Telemetry service is not initialized"
-    )
+    started = received_events(client, "telemetry_started")
+    assert started
+    payload = started[0]["args"][0]
+    assert payload.get("pending") is True
+    assert "initialize" in payload.get("message", "").lower()
 
 
 @pytest.mark.asyncio

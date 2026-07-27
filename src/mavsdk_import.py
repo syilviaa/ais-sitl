@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import platform
+from pathlib import Path
 from typing import Any, Optional, Tuple
 
 System: Any = None
@@ -50,15 +52,43 @@ MavsdkServerHint = (
 )
 
 
+def resolve_mavsdk_server_path() -> Optional[Path]:
+    """Locate mavsdk_server: env override, pip bundle, or Homebrew."""
+    override = os.environ.get("MAVSDK_SERVER_PATH", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if path.is_file():
+            return path
+
+    if MAVSDK_AVAILABLE:
+        try:
+            import mavsdk
+
+            base = Path(mavsdk.__file__).resolve().parent / "bin"
+            candidates = [
+                base / "mavsdk_server",
+                base / platform.machine() / "mavsdk_server",
+                base / "arm64" / "mavsdk_server",
+                base / "x86_64" / "mavsdk_server",
+            ]
+            for candidate in candidates:
+                if candidate.is_file():
+                    return candidate
+        except Exception:
+            pass
+
+    for brew_path in (
+        Path("/opt/homebrew/bin/mavsdk_server"),
+        Path("/usr/local/bin/mavsdk_server"),
+    ):
+        if brew_path.is_file():
+            return brew_path
+
+    return None
+
+
 def mavsdk_server_available() -> bool:
-    """Return True when the bundled mavsdk_server binary exists for this platform."""
+    """Return True when mavsdk_server can be launched on this platform."""
     if not MAVSDK_AVAILABLE:
         return False
-    try:
-        import mavsdk
-        from pathlib import Path
-
-        binary = Path(mavsdk.__file__).resolve().parent / "bin" / "mavsdk_server"
-        return binary.is_file()
-    except Exception:
-        return False
+    return resolve_mavsdk_server_path() is not None

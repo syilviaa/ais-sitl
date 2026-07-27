@@ -19,6 +19,7 @@ from src.mavsdk_import import (
     MissionItem,
     MissionPlan,
     System,
+    resolve_mavsdk_server_path,
 )
 
 HAS_MAVSDK = MAVSDK_AVAILABLE
@@ -254,12 +255,12 @@ class Drone:
 
     def _start_mavsdk_server(self, urls: List[str], grpc_port: int) -> None:
         """Launch mavsdk_server with stderr captured for diagnostics."""
-        if sys.version_info >= (3, 7):
-            from importlib.resources import path as resource_path
-        else:
-            from importlib_resources import path as resource_path
-
-        from mavsdk import bin
+        backend = resolve_mavsdk_server_path()
+        if backend is None:
+            raise ConnectionError(
+                "mavsdk_server binary not found. Run ./scripts/setup-dev.sh "
+                "or set MAVSDK_SERVER_PATH."
+            )
 
         self._stop_mavsdk_server()
         log_fd, self._mavsdk_log_path = tempfile.mkstemp(
@@ -270,14 +271,13 @@ class Drone:
             self._mavsdk_log_path, "w", encoding="utf-8"
         )
 
-        with resource_path(bin, "mavsdk_server") as backend:
-            args = [os.fspath(backend), "-p", str(grpc_port), *urls]
-            logger.info("Starting mavsdk_server: %s", " ".join(args[1:]))
-            self._mavsdk_proc = subprocess.Popen(
-                args,
-                stdout=self._mavsdk_log_handle,
-                stderr=subprocess.STDOUT,
-            )
+        args = [os.fspath(backend), "-p", str(grpc_port), *urls]
+        logger.info("Starting mavsdk_server: %s", " ".join(args[1:]))
+        self._mavsdk_proc = subprocess.Popen(
+            args,
+            stdout=self._mavsdk_log_handle,
+            stderr=subprocess.STDOUT,
+        )
 
     async def _try_connect(self, address: str, timeout_s: float, grpc_port: int) -> None:
         """Connect one MAVSDK endpoint and wait for PX4 heartbeat."""

@@ -76,6 +76,7 @@ class TelemetryCollector:
         # Telemetry state
         self._latest_snapshot: Optional[TelemetrySnapshot] = None
         self._history: deque = deque(maxlen=history_size)
+        self._demo_drone = None
 
         # Collection control
         self._collecting = False
@@ -120,6 +121,10 @@ class TelemetryCollector:
     # ========================================================================
     # Data Access
     # ========================================================================
+
+    def set_demo_drone(self, drone) -> None:
+        """Use demo drone telemetry instead of MAVSDK/stub."""
+        self._demo_drone = drone
 
     def get_latest(self) -> Optional[TelemetrySnapshot]:
         """
@@ -234,6 +239,9 @@ class TelemetryCollector:
 
     async def _collect_snapshot(self) -> Optional[TelemetrySnapshot]:
         """Collect single telemetry snapshot from MAVSDK."""
+        if self._demo_drone is not None:
+            return self._snapshot_from_demo(await self._demo_drone.get_telemetry())
+
         if not MAVSDK_AVAILABLE or not self._system:
             return self._get_stub_telemetry()
 
@@ -384,12 +392,34 @@ class TelemetryCollector:
     # Stub Mode (when MAVSDK not available)
     # ========================================================================
 
+    def _snapshot_from_demo(self, data: dict) -> TelemetrySnapshot:
+        """Build snapshot from DemoDrone flat telemetry dict."""
+        return TelemetrySnapshot(
+            timestamp=data.get("timestamp", time.time()),
+            lat=data.get("lat", 51.1694),
+            lon=data.get("lon", 71.4491),
+            altitude_m=data.get("alt", data.get("relative_altitude_m", 0.0)),
+            altitude_msl_m=data.get("absolute_altitude_m", 0.0),
+            vx=data.get("vx", 0.0),
+            vy=data.get("vy", 0.0),
+            vz=data.get("vz", 0.0),
+            roll_deg=data.get("roll", 0.0),
+            pitch_deg=data.get("pitch", 0.0),
+            yaw_deg=data.get("yaw", 0.0),
+            battery_percent=data.get("battery", data.get("battery_percent", 100.0)),
+            gps_fix=data.get("gps_fix", "3d"),
+            satellites=data.get("satellites", 12),
+            armed=data.get("armed", False),
+            flight_mode=data.get("mode", data.get("flight_mode", "manual")),
+            in_air=data.get("alt", 0.0) > 0.5,
+        )
+
     def _get_stub_telemetry(self) -> TelemetrySnapshot:
         """Generate stub telemetry for testing without MAVSDK."""
         return TelemetrySnapshot(
             timestamp=time.time(),
-            lat=47.39770,
-            lon=8.54550,
+            lat=51.1694,
+            lon=71.4491,
             altitude_m=0.0,
             vx=0.0,
             vy=0.0,

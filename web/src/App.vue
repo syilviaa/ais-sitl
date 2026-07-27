@@ -256,7 +256,7 @@ export default {
     if (this.progressInterval) clearInterval(this.progressInterval)
   },
   methods: {
-    /** REST fallback until Жанель wires WebSocket → pushTelemetry */
+    /** REST fallback when WebSocket is offline */
     startRestFallback() {
       this.restFallbackInterval = setInterval(async () => {
         if (this.wsStatus === 'connected') return
@@ -312,12 +312,21 @@ export default {
     async initializeDrone() {
       try {
         this.addEvent('info', 'Initializing SITL...')
-        const response = await fetch(`${API_BASE}/drone/initialize`, {
+        let response = await fetch(`${API_BASE}/drone/initialize`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ port: 14540, sitl_port: 14580 }),
         })
-        const data = await response.json()
+        let data = await response.json()
+        if (!data.success) {
+          this.addEvent('warning', data.hint || data.error || 'SITL unavailable — demo mode')
+          response = await fetch(`${API_BASE}/drone/initialize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ demo: true }),
+          })
+          data = await response.json()
+        }
         if (data.success) {
           await fetch(`${API_BASE}/drone/wait-ready`, {
             method: 'POST',
@@ -326,7 +335,8 @@ export default {
           })
           this.droneReady = true
           requestTelemetryStart()
-          this.addEvent('success', 'SITL ready — Astana home')
+          const label = data.demo_mode ? 'Demo ready — Astana home' : 'SITL ready — Astana home'
+          this.addEvent('success', label)
           if (this.$refs.mapComponent) this.$refs.mapComponent.clearTrail()
         } else {
           this.addEvent('error', data.hint || data.error || 'Init failed')
