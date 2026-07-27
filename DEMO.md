@@ -39,15 +39,15 @@ chmod +x scripts/setup-dev.sh scripts/start-backend.sh
 
 Demo-only (no SITL):
 ```bash
-curl -X POST http://127.0.0.1:5000/api/drone/initialize \
+curl -X POST http://127.0.0.1:5001/api/drone/initialize \
   -H 'Content-Type: application/json' \
   -d '{"demo":true}'
 ```
 
 Проверка:
 ```bash
-curl http://127.0.0.1:5000/api/health
-curl -X POST http://127.0.0.1:5000/api/drone/initialize \
+curl http://127.0.0.1:5001/api/health
+curl -X POST http://127.0.0.1:5001/api/drone/initialize \
   -H 'Content-Type: application/json' \
   -d '{"port":14540,"sitl_port":14580}'
 ```

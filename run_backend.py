@@ -7,9 +7,20 @@ Available at: http://127.0.0.1:5000
 """
 
 import logging
+import os
+import platform
 import sys
 
 from src.backend.app import create_app
+
+
+def default_port() -> int:
+    """5001 on macOS avoids AirPlay Receiver on :5000."""
+    if os.environ.get("PORT"):
+        return int(os.environ["PORT"])
+    if platform.system() == "Darwin":
+        return 5001
+    return 5000
 
 # Configure logging
 logging.basicConfig(
@@ -68,8 +79,13 @@ def main():
         logger.info("  stop_telemetry       - Stop streaming")
 
         logger.info("")
+        port = default_port()
         logger.info("=" * 70)
-        logger.info("🚀 Starting server at http://127.0.0.1:5000")
+        logger.info("🚀 Starting server at http://127.0.0.1:%s", port)
+        if platform.system() == "Darwin" and port == 5001:
+            logger.info(
+                "   (macOS: port 5001 — AirPlay often occupies :5000)"
+            )
         logger.info("=" * 70)
         logger.info("")
 
@@ -77,7 +93,7 @@ def main():
         socketio.run(
             app,
             host='127.0.0.1',
-            port=5000,
+            port=port,
             debug=True,
             use_reloader=True,
             allow_unsafe_werkzeug=True,

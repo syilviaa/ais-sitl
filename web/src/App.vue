@@ -174,7 +174,11 @@ import { DEFAULT_WAYPOINTS } from './config/trainingZone.js'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
 import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
 
-const API_BASE = `${import.meta.env.VITE_API_URL || 'http://127.0.0.1:5000'}/api`
+const API_BASE = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL.replace(/\/$/, '')}/api`
+  : import.meta.env.DEV
+    ? '/api'
+    : 'http://127.0.0.1:5001/api'
 
 export default {
   name: 'App',
