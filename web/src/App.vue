@@ -2,7 +2,7 @@
   <div id="app" class="dashboard">
     <header class="navbar">
       <div class="navbar-brand">
-        <h1>🚁 AIS SITL — Almaty Training Field</h1>
+        <h1>🚁 AIS SITL — Astana Training Field</h1>
         <span class="subtitle">Territory Intelligence Dashboard · KZ</span>
       </div>
       <div class="navbar-status">
@@ -233,7 +233,7 @@ export default {
     },
   },
   mounted() {
-    this.addEvent('system', 'Almaty Training Field dashboard loaded')
+    this.addEvent('system', 'Astana Training Field dashboard loaded')
     this.loadNfzZones()
     this.initializeBackend()
     this.unsubTelemetry = onTelemetry((t) => {
@@ -318,7 +318,7 @@ export default {
             body: JSON.stringify({ timeout: 30 }),
           })
           this.droneReady = true
-          this.addEvent('success', 'SITL ready — Almaty home')
+          this.addEvent('success', 'SITL ready — Astana home')
           if (this.$refs.mapComponent) this.$refs.mapComponent.clearTrail()
         } else {
           this.addEvent('error', data.error || 'Init failed')
@@ -461,7 +461,7 @@ export default {
         const response = await fetch(`${API_BASE}/mission/export-plan`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ waypoints: this.waypoints, name: 'Almaty Training Mission' }),
+          body: JSON.stringify({ waypoints: this.waypoints, name: 'Astana Training Mission' }),
         })
         const data = await response.json()
         if (data.success) {

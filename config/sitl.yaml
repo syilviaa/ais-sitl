@@ -10,9 +10,9 @@ sitl:
 
   # Initial position (latitude, longitude, altitude)
   start_position:
-    lat: 43.2220
-    lon: 76.8512
-    alt: 0.0  # Almaty Training Field — единая зона с картой Dashboard
+    lat: 51.1694
+    lon: 71.4491
+    alt: 0.0  # Astana Training Field — единая зона с картой Dashboard
 
   # Flight parameters
   flight:

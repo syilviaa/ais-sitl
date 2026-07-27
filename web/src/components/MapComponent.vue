@@ -69,14 +69,14 @@ export default {
 
       this.map = L.map('map').setView(MAP_CENTER, MAP_ZOOM)
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '© OpenStreetMap · Almaty Training Field',
+        attribution: '© OpenStreetMap · Astana Training Field',
         maxZoom: 19,
       }).addTo(this.map)
 
       this.homeMarker = L.marker([TRAINING_HOME.lat, TRAINING_HOME.lon], {
         icon: L.divIcon({ className: 'home-pin', html: '🏠', iconSize: [28, 28] }),
       })
-      this.homeMarker.bindPopup('<b>Home</b><br/>Almaty Training Field').addTo(this.map)
+      this.homeMarker.bindPopup('<b>Home</b><br/>Astana Training Field').addTo(this.map)
 
       this.droneMarker = L.marker([TRAINING_HOME.lat, TRAINING_HOME.lon], {
         icon: L.divIcon({ className: 'drone-pin', html: '🚁', iconSize: [30, 30] }),
