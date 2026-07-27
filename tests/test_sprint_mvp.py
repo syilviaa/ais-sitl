@@ -1,4 +1,4 @@
-"""MVP Sprint 1 compliance tests (TZ §2–4)."""
+"""MVP Sprint 1 compliance tests (TZ §2–4) — Astana Training Field."""
 
 import json
 from pathlib import Path
@@ -9,8 +9,21 @@ from src.autopilot.geofence import GeofenceValidator
 from src.mission_plan import waypoints_to_plan
 from src.models import TelemetrySnapshot
 
-
 NFZ_PATH = Path(__file__).resolve().parents[1] / "config" / "nfz_zones.geojson"
+
+# Astana Training Field — safe demo route (matches web/src/config/trainingZone.js)
+SAFE_WAYPOINTS = [
+    (51.1680, 71.4460, 50.0),
+    (51.1688, 71.4475, 60.0),
+    (51.1692, 71.4485, 60.0),
+    (51.1680, 71.4460, 0.0),
+]
+
+# Inside Training Restricted Area A
+NFZ_WAYPOINTS = [
+    (51.1715, 71.4540, 50.0),
+    (51.1720, 71.4550, 50.0),
+]
 
 
 class TestGeofenceCompliance:
@@ -26,22 +39,10 @@ class TestGeofenceCompliance:
         assert len(validator.active_zones) >= 1
 
     def test_safe_mission_passes(self, validator):
-        # Route west of Airport NFZ
-        waypoints = [
-            (47.3950, 8.5300, 50.0),
-            (47.3965, 8.5330, 60.0),
-            (47.3980, 8.5360, 60.0),
-            (47.3950, 8.5300, 0.0),
-        ]
-        assert validator.validate_mission(waypoints) is True
+        assert validator.validate_mission(SAFE_WAYPOINTS) is True
 
     def test_mission_through_nfz_blocked(self, validator):
-        # Point inside Airport Control Zone
-        waypoints = [
-            (47.4000, 8.5500, 50.0),
-            (47.4010, 8.5510, 50.0),
-        ]
-        assert validator.validate_mission(waypoints) is False
+        assert validator.validate_mission(NFZ_WAYPOINTS) is False
 
 
 class TestMissionPlanExport:
@@ -49,8 +50,8 @@ class TestMissionPlanExport:
 
     def test_export_plan_format(self):
         waypoints = [
-            {"lat": 47.395, "lon": 8.53, "altitude": 50},
-            {"lat": 47.396, "lon": 8.535, "altitude": 60},
+            {"lat": 51.1680, "lon": 71.4460, "altitude": 50},
+            {"lat": 51.1688, "lon": 71.4475, "altitude": 60},
         ]
         plan = waypoints_to_plan(waypoints)
         assert plan["fileType"] == "Plan"
@@ -62,7 +63,7 @@ class TestTelemetryLatency:
     """TZ §2.2 — latency tracking."""
 
     def test_api_dict_includes_latency(self):
-        snap = TelemetrySnapshot(lat=47.0, lon=8.0, latency_ms=12.5)
+        snap = TelemetrySnapshot(lat=51.1694, lon=71.4491, latency_ms=12.5)
         data = snap.to_api_dict()
         assert data["latency_ms"] == 12.5
         assert "lat" in data
@@ -84,10 +85,10 @@ class TestSprintExperimentScenario:
 
     def test_sprint_waypoints_count(self):
         waypoints = [
-            {"lat": 47.3950, "lon": 8.5300, "altitude": 50},
-            {"lat": 47.3965, "lon": 8.5330, "altitude": 60},
-            {"lat": 47.3980, "lon": 8.5360, "altitude": 60},
-            {"lat": 47.3950, "lon": 8.5300, "altitude": 0},
+            {"lat": 51.1680, "lon": 71.4460, "altitude": 50},
+            {"lat": 51.1688, "lon": 71.4475, "altitude": 60},
+            {"lat": 51.1692, "lon": 71.4485, "altitude": 60},
+            {"lat": 51.1680, "lon": 71.4460, "altitude": 0},
         ]
         assert len(waypoints) == 4
 
