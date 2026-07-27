@@ -269,6 +269,9 @@ async def test_invalid_mission_is_rejected_before_mavsdk_upload(mission):
     await drone.disconnect()
 
 
-def test_connection_urls_listen_on_remote_port_only():
+def test_connection_urls_initiate_onboard_port_first():
     drone = Drone(host="127.0.0.1", port=14540, sitl_port=14580)
-    assert drone.connection_urls() == ["udpin://0.0.0.0:14540"]
+    urls = drone.connection_urls()
+    assert urls[0] == "udp://127.0.0.1:14580"
+    assert "udp://:14540" in urls
+    assert "udpin://0.0.0.0:14540" in urls

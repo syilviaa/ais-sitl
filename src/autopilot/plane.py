@@ -3,6 +3,11 @@
 import asyncio
 import inspect
 import logging
+import os
+import socket
+import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -151,6 +156,10 @@ class Drone:
         self.sitl_port = sitl_port
         self._injected_system = system is not None
         self._system = system
+        self._mavsdk_proc: Optional[subprocess.Popen] = None
+        self._mavsdk_log_path: Optional[str] = None
+        self._mavsdk_log_handle: Optional[Any] = None
+        self._grpc_port = 50051
         self._geofence_validator = geofence_validator
         self._command_timeout_s = command_timeout_s
         self._connected = False
@@ -189,18 +198,101 @@ class Drone:
         return self.host
 
     def connection_urls(self) -> List[str]:
-        """MAVLink listen URL — PX4 onboard instance sends TO this remote port."""
-        return [f"udpin://0.0.0.0:{self.port}"]
+        """MAVSDK connection URLs to try (initiate to PX4 onboard port first).
 
-    async def _try_connect(self, address: str, timeout_s: float) -> None:
+        PX4 onboard mavlink binds UDP ``sitl_port`` (14580) and sends TO
+        ``port`` (14540). Passive listen on 14540 alone often never completes
+        MAVSDK discovery — we must send heartbeats to 14580 first
+        (``udp://127.0.0.1:14580`` client mode per MAVSDK docs).
+        """
+        host = self._bind_host()
+        return [
+            f"udp://{host}:{self.sitl_port}",
+            f"udp://:{self.port}",
+            f"udpin://0.0.0.0:{self.port}",
+        ]
+
+    @staticmethod
+    def _probe_udp_port(port: int, seconds: float = 2.0) -> tuple[int, set[tuple[str, int]]]:
+        """Count MAVLink datagrams reaching a local UDP port."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sources: set[tuple[str, int]] = set()
+        count = 0
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", port))
+            sock.settimeout(0.25)
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    _, addr = sock.recvfrom(4096)
+                except socket.timeout:
+                    continue
+                count += 1
+                sources.add(addr)
+        finally:
+            sock.close()
+        return count, sources
+
+    def _stop_mavsdk_server(self) -> None:
+        if self._mavsdk_proc is not None:
+            self._mavsdk_proc.kill()
+            self._mavsdk_proc.wait(timeout=2)
+            self._mavsdk_proc = None
+        if self._mavsdk_log_handle is not None:
+            self._mavsdk_log_handle.close()
+            self._mavsdk_log_handle = None
+
+    def _read_mavsdk_server_log(self) -> str:
+        if not self._mavsdk_log_path or not os.path.isfile(self._mavsdk_log_path):
+            return ""
+        try:
+            with open(self._mavsdk_log_path, encoding="utf-8", errors="replace") as handle:
+                return handle.read()[-4000:]
+        except OSError:
+            return ""
+
+    def _start_mavsdk_server(self, urls: List[str], grpc_port: int) -> None:
+        """Launch mavsdk_server with stderr captured for diagnostics."""
+        if sys.version_info >= (3, 7):
+            from importlib.resources import path as resource_path
+        else:
+            from importlib_resources import path as resource_path
+
+        from mavsdk import bin
+
+        self._stop_mavsdk_server()
+        log_fd, self._mavsdk_log_path = tempfile.mkstemp(
+            prefix="mavsdk_server_", suffix=".log"
+        )
+        os.close(log_fd)
+        self._mavsdk_log_handle = open(
+            self._mavsdk_log_path, "w", encoding="utf-8"
+        )
+
+        with resource_path(bin, "mavsdk_server") as backend:
+            args = [os.fspath(backend), "-p", str(grpc_port), *urls]
+            logger.info("Starting mavsdk_server: %s", " ".join(args[1:]))
+            self._mavsdk_proc = subprocess.Popen(
+                args,
+                stdout=self._mavsdk_log_handle,
+                stderr=subprocess.STDOUT,
+            )
+
+    async def _try_connect(self, address: str, timeout_s: float, grpc_port: int) -> None:
         """Connect one MAVSDK endpoint and wait for PX4 heartbeat."""
         if self._injected_system:
             if self._system is None:
                 raise ConnectionError("Injected MAVSDK system is missing")
             await self._system.connect(system_address=address)
         else:
-            self._system = System()
-            await self._system.connect(system_address=address)
+            self._start_mavsdk_server([address], grpc_port)
+            await asyncio.sleep(0.75)
+            self._system = System(
+                mavsdk_server_address="localhost",
+                port=grpc_port,
+            )
+            await self._system.connect(system_address=None)
 
         await self._wait_for_stream(
             self._system.core.connection_state,
@@ -209,33 +301,67 @@ class Drone:
         )
 
     async def connect(self, timeout_s: float = 15.0) -> bool:
-        """Connect to local PX4 SITL — listen on remote port for onboard mavlink."""
+        """Connect to local PX4 SITL — initiate on sitl_port, then listen on port."""
         async with self._get_lock():
             if self._connected:
                 return True
 
+            if not self._injected_system:
+                packet_count, sources = self._probe_udp_port(self.port, seconds=2.0)
+                logger.info(
+                    "MAVLink UDP probe on port %s: %s datagram(s) from %s",
+                    self.port,
+                    packet_count,
+                    sorted(sources) if sources else "none",
+                )
+            else:
+                packet_count, sources = 0, set()
+
             urls = self.connection_urls()
-            address = urls[0]
-            try:
-                logger.info("MAVSDK connect: %s", address)
-                await self._try_connect(address, timeout_s)
-                self._connected = True
-                self._state = DroneState.CONNECTED
-                self._start_telemetry_collection()
-                logger.info("Connected to PX4 SITL via %s", address)
-                return True
-            except (asyncio.TimeoutError, Exception) as error:
-                last_error = error
-                if not self._injected_system:
-                    self._system = None
+            last_error: Optional[Exception] = None
+            attempt_timeout = min(12.0, timeout_s)
+
+            for index, address in enumerate(urls):
+                grpc_port = self._grpc_port + index
+                try:
+                    logger.info("MAVSDK connect attempt %s: %s", index + 1, address)
+                    await self._try_connect(address, attempt_timeout, grpc_port)
+                    self._connected = True
+                    self._state = DroneState.CONNECTED
+                    self._start_telemetry_collection()
+                    logger.info("Connected to PX4 SITL via %s", address)
+                    return True
+                except (asyncio.TimeoutError, Exception) as error:
+                    last_error = error
+                    server_log = self._read_mavsdk_server_log()
+                    if server_log:
+                        logger.warning(
+                            "mavsdk_server log (attempt %s):\n%s",
+                            index + 1,
+                            server_log,
+                        )
+                    logger.warning(
+                        "MAVSDK connect failed for %s: %s", address, error
+                    )
+                    if not self._injected_system:
+                        self._stop_mavsdk_server()
+                        self._system = None
 
             self._state = DroneState.ERROR
+            probe_hint = (
+                f"UDP probe saw {packet_count} datagram(s) on port {self.port}. "
+                if packet_count
+                else (
+                    f"No UDP datagrams reached port {self.port} — if SITL runs in Docker, "
+                    "use --network host or map UDP 14540 to the host. "
+                )
+            )
             if isinstance(last_error, asyncio.TimeoutError):
                 raise DroneTimeoutError(
-                    "Timed out waiting for PX4 heartbeat on "
-                    f"udpin://0.0.0.0:{self.port} "
-                    f"(PX4 onboard mavlink UDP {self.sitl_port} → remote {self.port}; "
-                    "check lsof -i :14540 for port conflicts)"
+                    "Timed out waiting for PX4 MAVSDK discovery. "
+                    f"{probe_hint}"
+                    f"Tried: {', '.join(urls)}. "
+                    "Restart PX4 SITL after backend connect failures (PX4 caches UDP peer)."
                 ) from last_error
             if isinstance(last_error, (SystemExit, KeyboardInterrupt)):
                 raise ConnectionError(
@@ -255,6 +381,7 @@ class Drone:
             self._connected = False
             self._state = DroneState.DISCONNECTED
             if not self._injected_system:
+                self._stop_mavsdk_server()
                 self._system = None
 
     async def wait_until_ready(self, timeout_s: float = 30.0) -> bool:
