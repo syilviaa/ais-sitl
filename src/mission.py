@@ -20,12 +20,7 @@ from src.models import Waypoint, MissionItem, MissionProgress
 if TYPE_CHECKING:
     from mavsdk import System
 
-try:
-    from mavsdk import System
-    MAVSDK_AVAILABLE = True
-except ImportError:
-    MAVSDK_AVAILABLE = False
-    System = None
+from src.mavsdk_import import IMPORT_ERROR, MAVSDK_AVAILABLE, System
 
 logger = logging.getLogger(__name__)
 

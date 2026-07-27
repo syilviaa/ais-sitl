@@ -50,7 +50,13 @@ def run_async(coro: Coroutine[Any, Any, T], timeout: float | None = 120) -> T:
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     try:
         return future.result(timeout=timeout)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"Operation timed out after {timeout}s "
+            "(PX4 SITL not responding or MAVSDK server unavailable)"
+        ) from exc
     except Exception:
+        logger.exception("Coroutine failed on MAVSDK event loop")
         future.cancel()
         raise
 

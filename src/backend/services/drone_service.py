@@ -11,14 +11,15 @@ Provides high-level operations:
 
 import logging
 import asyncio
-import threading
 from typing import Optional, Dict, Any
 
 try:
     from src.autopilot.plane import Drone, DroneState
-    HAS_MAVSDK = True
-except (ImportError, AttributeError):
+    from src.mavsdk_import import IMPORT_ERROR, MAVSDK_AVAILABLE, mavsdk_server_available
+    HAS_MAVSDK = MAVSDK_AVAILABLE
+except (ImportError, AttributeError, SystemExit):
     HAS_MAVSDK = False
+    IMPORT_ERROR = "Drone module unavailable"
     Drone = None
     DroneState = None
 
@@ -31,32 +32,47 @@ class DroneService:
     def __init__(self):
         """Initialize drone service."""
         self.drone: Optional[Drone] = None
-        self._lock = threading.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
 
     async def initialize(self, host: str = "127.0.0.1", port: int = 14540):
         """Initialize and connect to drone."""
-        with self._lock:
+        if not HAS_MAVSDK or Drone is None:
+            detail = IMPORT_ERROR or "MAVSDK not installed"
+            raise RuntimeError(
+                f"MAVSDK unavailable ({detail}). "
+                "Use Python 3.11, pip install mavsdk, then start PX4 SITL on UDP 14540."
+            )
+        if not mavsdk_server_available():
+            from src.mavsdk_import import MavsdkServerHint
+            raise RuntimeError(MavsdkServerHint)
+
+        async with self._get_lock():
             if self.drone is not None:
                 return True
 
+            logger.info("Initializing Drone at %s:%s...", host, port)
+            drone = Drone(host=host, port=port)
             try:
-                logger.info(f"Initializing Drone at {host}:{port}...")
-                self.drone = Drone(host=host, port=port)
-
-                if not await self.drone.connect():
-                    raise Exception("Failed to connect to SITL")
-
+                await drone.connect()
+                self.drone = drone
                 logger.info("✅ Drone initialized")
                 return True
-
             except Exception as e:
-                logger.error(f"❌ Initialization failed: {e}")
+                logger.exception("❌ Initialization failed: %s", e)
                 self.drone = None
                 raise
 
     async def disconnect(self):
         """Disconnect from drone."""
-        with self._lock:
+        async with self._get_lock():
             if self.drone:
                 try:
                     await self.drone.disconnect()

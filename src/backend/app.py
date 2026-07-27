@@ -37,6 +37,12 @@ from src.backend.services.metrics_service import MetricsService
 from src.backend import database
 from src.backend.async_runner import run_async, schedule_coroutine
 from src.autopilot.geofence import GeofenceValidator
+from src.mavsdk_import import (
+    IMPORT_ERROR,
+    MAVSDK_AVAILABLE,
+    MavsdkServerHint,
+    mavsdk_server_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +177,9 @@ def create_app(config=None):
             'version': '0.1.0',
             'veha': 4,
             'drone_connected': app.drone_service.is_connected(),
+            'mavsdk_available': MAVSDK_AVAILABLE,
+            'mavsdk_error': None if MAVSDK_AVAILABLE else IMPORT_ERROR,
+            'mavsdk_server_available': mavsdk_server_available(),
         })
 
     # =====================================================================
@@ -181,8 +190,17 @@ def create_app(config=None):
     @error_handler
     def drone_initialize():
         """Initialize and connect to drone."""
+        data = request.get_json(silent=True) or {}
+        host = data.get('host', '127.0.0.1')
+        port = int(data.get('port', 14540))
+
         try:
-            run_async(app.drone_service.initialize())
+            if not mavsdk_server_available():
+                raise RuntimeError(MavsdkServerHint)
+            run_async(
+                app.drone_service.initialize(host=host, port=port),
+                timeout=30,
+            )
 
             # Initialize other services
             drone = app.drone_service.drone
@@ -219,8 +237,28 @@ def create_app(config=None):
                 "connected": True,
             })
         except Exception as e:
-            logger.error(f"Initialize error: {e}")
-            return jsonify({"success": False, "error": str(e)}), 500
+            logger.exception(
+                "Initialize error (host=%s port=%s)", host, port
+            )
+            message = str(e).strip() or repr(e)
+            hint = None
+            lower = message.lower()
+            if any(
+                token in lower
+                for token in ("sitl", "timed out", "connect", "mavsdk", "server")
+            ):
+                hint = (
+                    "Run backend locally with Python 3.11, start PX4 SITL (UDP 14540), "
+                    "then Connect SITL. Render/cloud backend cannot reach SITL on your laptop."
+                )
+            if "mavsdk server" in lower or "mavsdk_server" in lower:
+                hint = MavsdkServerHint
+            return jsonify({
+                "success": False,
+                "error": message,
+                "error_type": type(e).__name__,
+                "hint": hint,
+            }), 500
 
     @app.route('/api/drone/status', methods=['GET'])
     @error_handler

@@ -8,15 +8,15 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
-try:
-    from mavsdk import System
-    from mavsdk.mission import MissionItem, MissionPlan
-    HAS_MAVSDK = True
-except ImportError:
-    HAS_MAVSDK = False
-    System = None
-    MissionItem = None
-    MissionPlan = None
+from src.mavsdk_import import (
+    IMPORT_ERROR,
+    MAVSDK_AVAILABLE,
+    MissionItem,
+    MissionPlan,
+    System,
+)
+
+HAS_MAVSDK = MAVSDK_AVAILABLE
 
 
 logger = logging.getLogger(__name__)
@@ -196,6 +196,10 @@ class Drone:
                 if isinstance(error, asyncio.TimeoutError):
                     raise DroneTimeoutError(
                         "Timed out waiting for PX4 SITL"
+                    ) from error
+                if isinstance(error, (SystemExit, KeyboardInterrupt)):
+                    raise ConnectionError(
+                        "MAVSDK server unavailable on this platform"
                     ) from error
                 raise ConnectionError(
                     "Could not connect to local PX4 SITL"
