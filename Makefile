@@ -48,6 +48,10 @@ docker-run:
 	@chmod +x scripts/start-px4-sitl.sh
 	./scripts/start-px4-sitl.sh
 
+docker-gazebo:
+	@chmod +x scripts/start-px4-gazebo.sh scripts/install-gstreamer.sh
+	./scripts/start-px4-gazebo.sh
+
 docker-run-fg:
 	@chmod +x scripts/start-px4-sitl.sh
 	./scripts/start-px4-sitl.sh --fg

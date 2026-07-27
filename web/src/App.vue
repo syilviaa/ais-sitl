@@ -136,15 +136,13 @@
           </div>
         </section>
 
-        <!-- Video stub -->
         <section class="panel video-panel">
-          <h2>📹 Video stream</h2>
-          <div class="video-stub">
-            <div class="video-placeholder">
-              <p>No active stream</p>
-              <small>SITL stub</small>
-            </div>
-          </div>
+          <h2>📹 Видеопоток</h2>
+          <VideoStream
+            :telemetry="telemetry"
+            :active="droneReady && wsStatus === 'connected'"
+            :api-base="API_BASE"
+          />
         </section>
 
         <!-- Events -->
@@ -170,6 +168,7 @@
 
 <script>
 import MapComponent from './components/MapComponent.vue'
+import VideoStream from './components/VideoStream.vue'
 import { DEFAULT_WAYPOINTS } from './config/trainingZone.js'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
 import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
@@ -182,7 +181,7 @@ const API_BASE = import.meta.env.VITE_API_URL
 
 export default {
   name: 'App',
-  components: { MapComponent },
+  components: { MapComponent, VideoStream },
   data() {
     return {
       apiConnected: false,

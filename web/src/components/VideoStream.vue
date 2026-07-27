@@ -1,0 +1,240 @@
+<template>
+  <div class="video-wrap">
+    <img
+      v-show="useRealVideo && !videoError"
+      ref="videoImg"
+      class="video-real"
+      :src="mjpegUrl"
+      alt="Камера Gazebo"
+      @load="onVideoLoad"
+      @error="onVideoError"
+    />
+    <canvas
+      v-show="!useRealVideo || videoError"
+      ref="canvas"
+      class="video-canvas"
+      width="640"
+      height="360"
+    />
+    <div v-if="!active" class="video-overlay idle">
+      <p>Нет видеопотока</p>
+      <small>{{ idleHint }}</small>
+    </div>
+    <div v-else-if="active" class="video-overlay live">
+      <span class="live-dot" /> ЭФИР · {{ sourceLabel }}
+    </div>
+  </div>
+</template>
+
+<script>
+export default {
+  name: 'VideoStream',
+  props: {
+    telemetry: { type: Object, default: () => ({}) },
+    active: { type: Boolean, default: false },
+    /** База API, напр. /api или http://127.0.0.1:5001/api */
+    apiBase: { type: String, default: '/api' },
+  },
+  data() {
+    return {
+      rafId: null,
+      useRealVideo: false,
+      videoError: false,
+      gazeboAvailable: false,
+    }
+  },
+  computed: {
+    mjpegUrl() {
+      const base = this.apiBase.replace(/\/api\/?$/, '')
+      return `${base}/api/video/mjpeg`
+    },
+    sourceLabel() {
+      if (this.useRealVideo && !this.videoError) return 'Gazebo'
+      return 'SIH синт.'
+    },
+    idleHint() {
+      if (this.gazeboAvailable) {
+        return 'Запустите ./scripts/start-px4-gazebo.sh и «Подключить SITL»'
+      }
+      return 'SIH без камеры — синтетический FPV после подключения SITL'
+    },
+  },
+  watch: {
+    active(val) {
+      if (val && !this.useRealVideo) this.startSynthetic()
+      else if (!val) this.stopSynthetic()
+    },
+    telemetry: {
+      deep: true,
+      handler() {
+        if (this.active && (!this.useRealVideo || this.videoError)) {
+          this.drawFrame()
+        }
+      },
+    },
+  },
+  mounted() {
+    this.checkVideoStatus()
+    if (this.active && (!this.useRealVideo || this.videoError)) {
+      this.startSynthetic()
+    } else if (!this.active) {
+      this.drawIdle()
+    }
+  },
+  beforeUnmount() {
+    this.stopSynthetic()
+  },
+  methods: {
+    async checkVideoStatus() {
+      try {
+        const res = await fetch(`${this.apiBase.replace(/\/$/, '')}/video/status`)
+        if (!res.ok) return
+        const data = await res.json()
+        this.gazeboAvailable = Boolean(data.gstreamer_available)
+        const hasUdp = (data.udp_packets_sample || 0) > 0
+        if (data.gstreamer_available && (hasUdp || data.relay_running)) {
+          this.useRealVideo = true
+          this.videoError = false
+        }
+      } catch {
+        /* backend без video endpoint — только синт. FPV */
+      }
+    },
+    onVideoLoad() {
+      this.videoError = false
+      this.stopSynthetic()
+    },
+    onVideoError() {
+      this.videoError = true
+      if (this.active) this.startSynthetic()
+    },
+    startSynthetic() {
+      this.stopSynthetic()
+      const tick = () => {
+        this.drawFrame()
+        this.rafId = requestAnimationFrame(tick)
+      }
+      this.rafId = requestAnimationFrame(tick)
+    },
+    stopSynthetic() {
+      if (this.rafId) cancelAnimationFrame(this.rafId)
+      this.rafId = null
+    },
+    drawIdle() {
+      const canvas = this.$refs.canvas
+      if (!canvas) return
+      const ctx = canvas.getContext('2d')
+      const { width: w, height: h } = canvas
+      ctx.fillStyle = '#0f172a'
+      ctx.fillRect(0, 0, w, h)
+      ctx.fillStyle = '#64748b'
+      ctx.font = '600 15px system-ui, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.fillText('📹 Видеопоток', w / 2, h / 2)
+    },
+    drawFrame() {
+      const canvas = this.$refs.canvas
+      if (!canvas || !this.active) return
+      const ctx = canvas.getContext('2d')
+      const { width: w, height: h } = canvas
+      const t = this.telemetry || {}
+      const pitch = (t.pitch || 0) * (Math.PI / 180)
+      const roll = (t.roll || 0) * (Math.PI / 180)
+      const yaw = t.yaw || 0
+      const alt = t.alt ?? 0
+      const spd = t.speed ?? Math.hypot(t.vx || 0, t.vy || 0)
+
+      ctx.save()
+      ctx.translate(w / 2, h / 2)
+      ctx.rotate(-roll)
+      const horizonY = pitch * (h / 2.2)
+      ctx.fillStyle = '#1e3a5f'
+      ctx.fillRect(-w, -h, w * 2, h + horizonY)
+      ctx.fillStyle = '#14532d'
+      ctx.fillRect(-w, horizonY, w * 2, h * 2)
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(-w, horizonY)
+      ctx.lineTo(w, horizonY)
+      ctx.stroke()
+      ctx.restore()
+
+      ctx.fillStyle = 'rgba(0,0,0,0.55)'
+      ctx.fillRect(8, 8, 168, 72)
+      ctx.fillStyle = '#e2e8f0'
+      ctx.font = '600 13px monospace'
+      ctx.textAlign = 'left'
+      ctx.fillText(`ВЫС ${alt.toFixed(1)} м`, 16, 28)
+      ctx.fillText(`СКР ${spd.toFixed(1)} м/с`, 16, 46)
+      ctx.fillText(`КУР ${yaw.toFixed(0)}°`, 16, 64)
+    },
+  },
+}
+</script>
+
+<style scoped>
+.video-wrap {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #0f172a;
+  aspect-ratio: 16 / 9;
+}
+.video-real,
+.video-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+.video-overlay {
+  position: absolute;
+  pointer-events: none;
+}
+.video-overlay.idle {
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 12px;
+  background: linear-gradient(transparent 40%, rgba(0, 0, 0, 0.75));
+}
+.video-overlay.idle p {
+  color: #94a3b8;
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin: 0;
+}
+.video-overlay.idle small {
+  color: #64748b;
+  font-size: 0.68rem;
+  text-align: center;
+  max-width: 90%;
+  margin-top: 4px;
+}
+.video-overlay.live {
+  top: 8px;
+  right: 8px;
+  background: rgba(220, 38, 38, 0.85);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  animation: pulse 1s infinite;
+}
+@keyframes pulse {
+  50% { opacity: 0.4; }
+}
+</style>

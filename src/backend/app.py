@@ -20,7 +20,7 @@ import logging
 import os
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from functools import wraps
@@ -35,6 +35,7 @@ from src.backend.services.fleet_service import FleetService
 from src.backend.services.recording_service import RecordingService
 from src.backend.services.geofence_service import GeofenceService
 from src.backend.services.metrics_service import MetricsService
+from src.backend.services.video_service import video_relay
 from src.backend import database
 from src.backend.async_runner import run_async, schedule_coroutine
 from src.autopilot.geofence import GeofenceValidator
@@ -220,7 +221,27 @@ def create_app(config=None):
             'mavsdk_available': MAVSDK_AVAILABLE,
             'mavsdk_error': None if MAVSDK_AVAILABLE else IMPORT_ERROR,
             'mavsdk_server_available': mavsdk_server_available(),
+            'video': video_relay.status(),
         })
+
+    @app.route('/api/video/status', methods=['GET'])
+    @error_handler
+    def video_status():
+        """Gazebo camera relay status."""
+        return jsonify(video_relay.status())
+
+    @app.route('/api/video/mjpeg', methods=['GET'])
+    def video_mjpeg():
+        """MJPEG stream from Gazebo camera (UDP H.264 → GStreamer)."""
+        if not video_relay.gstreamer_available:
+            return jsonify({
+                'error': video_relay.status().get('error')
+                or 'GStreamer не установлен',
+            }), 503
+        return Response(
+            video_relay.mjpeg_generator(),
+            mimetype='multipart/x-mixed-replace; boundary=frame',
+        )
 
     # =====================================================================
     # DRONE ENDPOINTS

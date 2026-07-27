@@ -37,10 +37,20 @@ export function getConnectionStatus() {
   return connectionStatus
 }
 
+/** Нормализация заряда: PX4 иногда шлёт 10000 вместо 100 */
+function normalizeBattery(raw) {
+  if (raw == null || Number.isNaN(Number(raw))) return 100
+  const value = Number(raw)
+  if (value > 100) return Math.min(100, value / 100)
+  return Math.max(0, Math.min(100, value))
+}
+
 /** Нормализация REST / WebSocket payload → flat UI model */
 export function normalizeTelemetry(raw) {
   if (!raw) return null
-  if (raw.lat != null) return raw
+  if (raw.lat != null) {
+    return { ...raw, battery: normalizeBattery(raw.battery) }
+  }
 
   const pos = raw.position || {}
   const vel = raw.velocity || {}
@@ -61,7 +71,7 @@ export function normalizeTelemetry(raw) {
     roll: att.roll ?? raw.roll ?? 0,
     pitch: att.pitch ?? raw.pitch ?? 0,
     yaw: att.yaw ?? raw.yaw ?? 0,
-    battery: bat.percent ?? raw.battery ?? 100,
+    battery: normalizeBattery(bat.percent ?? raw.battery ?? raw.battery_percent),
     gps_status: gps.fix ?? raw.gps_status ?? 'no_fix',
     satellites: gps.satellites ?? raw.satellites ?? 0,
     armed: state.armed ?? raw.armed ?? false,
