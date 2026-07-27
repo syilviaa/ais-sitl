@@ -4,7 +4,6 @@
       v-show="useRealVideo && !videoError"
       ref="videoImg"
       class="video-real"
-      :src="mjpegUrl"
       alt="Камера Gazebo"
       @load="onVideoLoad"
       @error="onVideoError"
@@ -20,6 +19,9 @@
       <p>Нет видеопотока</p>
       <small>{{ idleHint }}</small>
     </div>
+    <div v-else-if="useRealVideo && !hasLiveFrame && !videoError" class="video-overlay waiting">
+      Ожидание камеры Gazebo…
+    </div>
     <div v-else-if="active" class="video-overlay live">
       <span class="live-dot" /> ЭФИР · {{ sourceLabel }}
     </div>
@@ -32,7 +34,6 @@ export default {
   props: {
     telemetry: { type: Object, default: () => ({}) },
     active: { type: Boolean, default: false },
-    /** База API, напр. /api или http://127.0.0.1:5001/api */
     apiBase: { type: String, default: '/api' },
   },
   data() {
@@ -41,20 +42,25 @@ export default {
       useRealVideo: false,
       videoError: false,
       gazeboAvailable: false,
+      hasLiveFrame: false,
+      statusPoll: null,
+      framePoll: null,
+      objectUrl: null,
     }
   },
   computed: {
-    mjpegUrl() {
+    snapshotBase() {
       const base = this.apiBase.replace(/\/api\/?$/, '')
-      return `${base}/api/video/mjpeg`
+      return `${base}/api/video/snapshot`
     },
     sourceLabel() {
-      if (this.useRealVideo && !this.videoError) return 'Gazebo'
+      if (this.useRealVideo && !this.videoError && this.hasLiveFrame) return 'Gazebo'
+      if (this.useRealVideo && !this.videoError) return 'Gazebo · ожидание'
       return 'SIH синт.'
     },
     idleHint() {
       if (this.gazeboAvailable) {
-        return 'Запустите ./scripts/start-px4-gazebo.sh и «Подключить SITL»'
+        return 'Gazebo + backend: ./scripts/start-px4-gazebo.sh и start-backend.sh'
       }
       return 'SIH без камеры — синтетический FPV после подключения SITL'
     },
@@ -63,8 +69,10 @@ export default {
     active(val) {
       if (val) {
         this.checkVideoStatus()
+        this.startFramePoll()
       } else {
         this.stopSynthetic()
+        this.stopFramePoll()
       }
     },
     telemetry: {
@@ -78,14 +86,14 @@ export default {
   },
   mounted() {
     this.checkVideoStatus()
-    if (this.active && (!this.useRealVideo || this.videoError)) {
-      this.startSynthetic()
-    } else if (!this.active) {
-      this.drawIdle()
-    }
+    this.statusPoll = setInterval(this.checkVideoStatus, 3000)
+    if (this.active) this.startFramePoll()
+    else if (!this.active) this.drawIdle()
   },
   beforeUnmount() {
     this.stopSynthetic()
+    this.stopFramePoll()
+    if (this.statusPoll) clearInterval(this.statusPoll)
   },
   methods: {
     async checkVideoStatus() {
@@ -94,10 +102,12 @@ export default {
         if (!res.ok) return
         const data = await res.json()
         this.gazeboAvailable = Boolean(data.gstreamer_available)
+        this.hasLiveFrame = Boolean(data.has_frame)
         if (data.gstreamer_available) {
           this.useRealVideo = true
           this.videoError = false
           this.stopSynthetic()
+          if (this.active) this.startFramePoll()
           return
         }
         if (this.active && !this.useRealVideo) this.startSynthetic()
@@ -105,12 +115,42 @@ export default {
         if (this.active && !this.useRealVideo) this.startSynthetic()
       }
     },
+    startFramePoll() {
+      if (this.framePoll || !this.useRealVideo) return
+      this.framePoll = setInterval(() => this.fetchSnapshot(), 150)
+      this.fetchSnapshot()
+    },
+    stopFramePoll() {
+      if (this.framePoll) clearInterval(this.framePoll)
+      this.framePoll = null
+      if (this.objectUrl) {
+        URL.revokeObjectURL(this.objectUrl)
+        this.objectUrl = null
+      }
+    },
+    async fetchSnapshot() {
+      if (!this.useRealVideo || !this.active) return
+      try {
+        const res = await fetch(`${this.snapshotBase}?t=${Date.now()}`)
+        if (!res.ok) throw new Error(`snapshot ${res.status}`)
+        const blob = await res.blob()
+        if (blob.size < 2000) return
+        if (this.objectUrl) URL.revokeObjectURL(this.objectUrl)
+        this.objectUrl = URL.createObjectURL(blob)
+        const img = this.$refs.videoImg
+        if (img) img.src = this.objectUrl
+      } catch {
+        this.onVideoError()
+      }
+    },
     onVideoLoad() {
       this.videoError = false
+      this.hasLiveFrame = true
       this.stopSynthetic()
     },
     onVideoError() {
       this.videoError = true
+      this.stopFramePoll()
       if (this.active) this.startSynthetic()
     },
     startSynthetic() {
@@ -135,7 +175,7 @@ export default {
       ctx.fillStyle = '#64748b'
       ctx.font = '600 15px system-ui, sans-serif'
       ctx.textAlign = 'center'
-      ctx.fillText('📹 Видеопоток', w / 2, h / 2)
+      ctx.fillText('Видеопоток', w / 2, h / 2)
     },
     drawFrame() {
       const canvas = this.$refs.canvas
@@ -213,11 +253,21 @@ export default {
   margin: 0;
 }
 .video-overlay.idle small {
-  color: #64748b;
+  color: #cbd5e1;
   font-size: 0.68rem;
   text-align: center;
   max-width: 90%;
   margin-top: 4px;
+}
+.video-overlay.waiting {
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.85);
+  color: #94a3b8;
+  font-size: 0.75rem;
+  font-weight: 600;
 }
 .video-overlay.live {
   top: 8px;
