@@ -1,8 +1,12 @@
 """PX4 SITL quadcopter control using MAVSDK."""
 
 import asyncio
+import atexit
 import inspect
 import logging
+import os
+import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from enum import Enum
@@ -133,6 +137,7 @@ class Drone:
         self,
         host: str = "127.0.0.1",
         port: int = 14540,
+        sitl_port: int = 14580,
         system: Optional[Any] = None,
         geofence_validator: Optional[Any] = None,
         command_timeout_s: float = 30.0,
@@ -143,9 +148,15 @@ class Drone:
             )
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("port must be a valid UDP port")
+        if not isinstance(sitl_port, int) or not 1 <= sitl_port <= 65535:
+            raise ValueError("sitl_port must be a valid UDP port")
         self.host = host
         self.port = port
-        self._system = system or System()
+        self.sitl_port = sitl_port
+        self._injected_system = system is not None
+        self._system = system
+        self._mavsdk_server_proc: Optional[subprocess.Popen] = None
+        self._grpc_port = 50051 + max(0, self.port - 14540)
         self._geofence_validator = geofence_validator
         self._command_timeout_s = command_timeout_s
         self._connected = False
@@ -178,36 +189,116 @@ class Drone:
         """Return whether a local SITL connection has been established."""
         return self._connected
 
+    def _bind_host(self) -> str:
+        if self.host in {"127.0.0.1", "localhost", "::1"}:
+            return "127.0.0.1"
+        return self.host
+
+    def connection_urls(self) -> List[str]:
+        """Build MAVSDK URLs for PX4 SITL (listen + optional send to sitl_port)."""
+        bind_host = self._bind_host()
+        urls = [f"udp://{bind_host}:{self.port}"]
+        if bind_host == "127.0.0.1":
+            urls.append(f"udp://:{self.port}")
+        if self.sitl_port != self.port:
+            urls.append(f"udpout://{bind_host}:{self.sitl_port}")
+        return urls
+
+    def _launch_mavsdk_server(self, urls: List[str]) -> None:
+        """Start mavsdk_server with one or more MAVLink endpoints."""
+        if self._injected_system:
+            return
+
+        if sys.version_info >= (3, 7):
+            from importlib.resources import path as resource_path
+        else:
+            from importlib_resources import path as resource_path
+
+        from mavsdk import bin
+
+        if self._mavsdk_server_proc is not None:
+            return
+
+        try:
+            with resource_path(bin, "mavsdk_server") as backend:
+                args = [os.fspath(backend), "-p", str(self._grpc_port), *urls]
+                logger.info("Starting mavsdk_server: %s", " ".join(args[1:]))
+                self._mavsdk_server_proc = subprocess.Popen(
+                    args,
+                    shell=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except FileNotFoundError as error:
+            raise ConnectionError(
+                "MAVSDK server binary unavailable on this platform"
+            ) from error
+
+        def cleanup() -> None:
+            if self._mavsdk_server_proc is not None:
+                self._mavsdk_server_proc.kill()
+
+        atexit.register(cleanup)
+
+    async def _ensure_system(self, urls: List[str]) -> None:
+        """Create System and start mavsdk_server when not injected (tests)."""
+        if self._injected_system:
+            if self._system is None:
+                raise ConnectionError("Injected MAVSDK system is missing")
+            await self._system.connect(system_address=urls[0])
+            return
+
+        self._launch_mavsdk_server(urls)
+        if self._system is None:
+            self._system = System(
+                mavsdk_server_address="localhost",
+                port=self._grpc_port,
+            )
+        await self._system.connect(system_address=None)
+
     async def connect(self, timeout_s: float = 10.0) -> bool:
-        """Connect to local PX4 SITL over a UDP input endpoint."""
+        """Connect to local PX4 SITL over UDP (listen on port, send to sitl_port)."""
         async with self._get_lock():
             if self._connected:
                 return True
-            address = f"udpin://0.0.0.0:{self.port}"
+
+            urls = self.connection_urls()
             try:
-                await self._system.connect(system_address=address)
+                logger.info(
+                    "Connecting to PX4 SITL via MAVSDK: %s",
+                    ", ".join(urls),
+                )
+                await self._ensure_system(urls)
                 await self._wait_for_stream(
                     self._system.core.connection_state,
                     lambda item: item.is_connected,
                     timeout_s,
                 )
+                self._connected = True
+                self._state = DroneState.CONNECTED
+                self._start_telemetry_collection()
+                logger.info("Connected to PX4 SITL")
+                return True
             except (asyncio.TimeoutError, Exception) as error:
                 self._state = DroneState.ERROR
+                if self._mavsdk_server_proc is not None:
+                    self._mavsdk_server_proc.kill()
+                    self._mavsdk_server_proc = None
+                    self._system = None
                 if isinstance(error, asyncio.TimeoutError):
                     raise DroneTimeoutError(
-                        "Timed out waiting for PX4 SITL"
+                        "Timed out waiting for PX4 SITL on "
+                        f"udp://127.0.0.1:{self.port} "
+                        f"(PX4 mavlink instance UDP {self.sitl_port} → remote {self.port})"
                     ) from error
                 if isinstance(error, (SystemExit, KeyboardInterrupt)):
                     raise ConnectionError(
                         "MAVSDK server unavailable on this platform"
                     ) from error
+                message = str(error).strip() or repr(error)
                 raise ConnectionError(
-                    "Could not connect to local PX4 SITL"
+                    f"Could not connect to local PX4 SITL: {message}"
                 ) from error
-            self._connected = True
-            self._state = DroneState.CONNECTED
-            self._start_telemetry_collection()
-            return True
 
     async def disconnect(self) -> None:
         """Stop local subscriptions and mark the controller disconnected."""
@@ -217,6 +308,10 @@ class Drone:
             self._mission_task = None
             self._connected = False
             self._state = DroneState.DISCONNECTED
+            if self._mavsdk_server_proc is not None:
+                self._mavsdk_server_proc.kill()
+                self._mavsdk_server_proc = None
+                self._system = None
 
     async def wait_until_ready(self, timeout_s: float = 30.0) -> bool:
         """Wait until PX4 reports both a valid global GPS and home position."""

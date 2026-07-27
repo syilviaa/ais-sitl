@@ -150,7 +150,14 @@ conda install -c conda-forge shapely
 **Error:**
 ```
 ConnectionError: Could not connect to autopilot at 127.0.0.1:14540
+Timed out waiting for PX4 SITL on udp://127.0.0.1:14540
 ```
+
+**PX4 mavlink status shows:** `UDP (14580, remote port: 14540)`
+
+This means PX4 **sends telemetry to 14540** and **listens on 14580**.
+MAVSDK must use Python format `udp://127.0.0.1:14540` (not `udpin://`) **and**
+`udpout://127.0.0.1:14580` to send commands back.
 
 **Solutions:**
 1. Ensure PX4 SITL is running:
@@ -158,17 +165,25 @@ ConnectionError: Could not connect to autopilot at 127.0.0.1:14540
    docker run -it --rm ais-sitl:latest gazebo
    ```
 
-2. Check MAVLink listening:
+2. Check nothing else is bound to port 14540:
    ```bash
-   nc -zv 127.0.0.1 14540
+   lsof -i :14540
+   lsof -i :14580
    ```
 
-3. Verify MAVSDK installation:
+3. Initialize with explicit ports (dashboard/API):
+   ```bash
+   curl -X POST http://127.0.0.1:5000/api/drone/initialize \
+     -H 'Content-Type: application/json' \
+     -d '{"port": 14540, "sitl_port": 14580}'
+   ```
+
+4. Verify MAVSDK installation (Python 3.11 recommended):
    ```bash
    python3 -c "import mavsdk; print(mavsdk.__version__)"
    ```
 
-4. If using Docker container, ensure network is shared:
+5. If using Docker container, ensure network is shared:
    ```bash
    docker run --network host ais-sitl:latest
    ```

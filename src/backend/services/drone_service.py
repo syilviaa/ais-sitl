@@ -42,7 +42,12 @@ class DroneService:
             self._lock_loop = loop
         return self._lock
 
-    async def initialize(self, host: str = "127.0.0.1", port: int = 14540):
+    async def initialize(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 14540,
+        sitl_port: int = 14580,
+    ):
         """Initialize and connect to drone."""
         if not HAS_MAVSDK or Drone is None:
             detail = IMPORT_ERROR or "MAVSDK not installed"
@@ -58,8 +63,13 @@ class DroneService:
             if self.drone is not None:
                 return True
 
-            logger.info("Initializing Drone at %s:%s...", host, port)
-            drone = Drone(host=host, port=port)
+            logger.info(
+                "Initializing Drone at %s:%s (PX4 mavlink port %s)...",
+                host,
+                port,
+                sitl_port,
+            )
+            drone = Drone(host=host, port=port, sitl_port=sitl_port)
             try:
                 await drone.connect()
                 self.drone = drone

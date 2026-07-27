@@ -25,7 +25,8 @@ sitl:
 mavlink:
   # MAVLink protocol settings
   protocol_version: 2  # MAVLink 2.0
-  default_port: 14540  # SITL simulator port
+  default_port: 14540  # Offboard/GCS listen port (MAVSDK)
+  sitl_port: 14580  # PX4 mavlink instance local port (remote → default_port)
   heartbeat_interval: 0.1  # seconds
   telemetry_rate: 10  # Hz
   max_latency_ms: 50  # Target RTT

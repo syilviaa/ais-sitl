@@ -193,12 +193,17 @@ def create_app(config=None):
         data = request.get_json(silent=True) or {}
         host = data.get('host', '127.0.0.1')
         port = int(data.get('port', 14540))
+        sitl_port = int(data.get('sitl_port', 14580))
 
         try:
             if not mavsdk_server_available():
                 raise RuntimeError(MavsdkServerHint)
             run_async(
-                app.drone_service.initialize(host=host, port=port),
+                app.drone_service.initialize(
+                    host=host,
+                    port=port,
+                    sitl_port=sitl_port,
+                ),
                 timeout=30,
             )
 
