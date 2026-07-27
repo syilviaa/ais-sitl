@@ -6,11 +6,22 @@
 - **Node.js 18+**
 - **PX4 SITL** локально (UDP onboard 14580 → remote 14540)
 
-## 1. PX4 SITL (optional)
+## 1. PX4 SITL (real)
 
-Real SITL for live MAVLink. If unavailable, dashboard falls back to **demo mode** automatically.
+```bash
+chmod +x scripts/start-px4-sitl.sh
+./scripts/start-px4-sitl.sh
+```
 
-Запустите SITL на машине, где будет backend. После неудачных connect — **перезапустите SITL**.
+Official image `px4io/px4-sitl` (SIH, headless). **Не пробрасывайте** host UDP 14540 — его занимает MAVSDK.
+
+Проверка UDP:
+```bash
+./venv/bin/python scripts/mavlink_udp_probe.py --port 14540 --seconds 3
+```
+Должны быть datagrams (сотни/сек).
+
+После неудачного Initialize: `docker restart ais-px4-sitl`
 
 Проверка UDP:
 ```bash

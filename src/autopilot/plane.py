@@ -198,20 +198,24 @@ class Drone:
             return "127.0.0.1"
         return self.host
 
-    def connection_urls(self) -> List[str]:
+    def connection_urls(self, prefer_listen: bool = False) -> List[str]:
         """MAVSDK connection URLs to try (initiate to PX4 onboard port first).
 
         PX4 onboard mavlink binds UDP ``sitl_port`` (14580) and sends TO
         ``port`` (14540). Passive listen on 14540 alone often never completes
         MAVSDK discovery — we must send heartbeats to 14580 first
         (``udp://127.0.0.1:14580`` client mode per MAVSDK docs).
+
+        When a UDP probe already sees MAVLink on ``port`` (typical with
+        ``px4io/px4-sitl`` on Docker Desktop), listen mode succeeds first.
         """
         host = self._bind_host()
-        return [
-            f"udp://{host}:{self.sitl_port}",
-            f"udp://:{self.port}",
-            f"udpin://0.0.0.0:{self.port}",
-        ]
+        listen = f"udp://:{self.port}"
+        initiate = f"udp://{host}:{self.sitl_port}"
+        listen_in = f"udpin://0.0.0.0:{self.port}"
+        if prefer_listen:
+            return [listen, initiate, listen_in]
+        return [initiate, listen, listen_in]
 
     @staticmethod
     def _probe_udp_port(port: int, seconds: float = 2.0) -> tuple[int, set[tuple[str, int]]]:
@@ -231,6 +235,13 @@ class Drone:
                     continue
                 count += 1
                 sources.add(addr)
+        except OSError as error:
+            logger.warning(
+                "UDP probe could not bind port %s (%s) — port may be in use",
+                port,
+                error,
+            )
+            return -1, sources
         finally:
             sock.close()
         return count, sources
@@ -317,7 +328,7 @@ class Drone:
             else:
                 packet_count, sources = 0, set()
 
-            urls = self.connection_urls()
+            urls = self.connection_urls(prefer_listen=packet_count > 0)
             last_error: Optional[Exception] = None
             attempt_timeout = min(12.0, timeout_s)
 

@@ -43,13 +43,18 @@ docker-build:
 	docker build -t ais-sitl:latest -f Dockerfile .
 	@echo "✅ Docker image built successfully!"
 
-# Docker: Run SITL with Gazebo
+# Docker: Run real PX4 SITL (official px4io image, SIH headless)
 docker-run:
-	@echo "🚀 Starting PX4 SITL + Gazebo in Docker..."
-	@echo "⚠️  This requires X11 forwarding. On macOS, use XQuartz."
-	docker run -it --rm \
-		-e DISPLAY=host.docker.internal:0 \
-		ais-sitl:latest gazebo
+	@chmod +x scripts/start-px4-sitl.sh
+	./scripts/start-px4-sitl.sh
+
+docker-run-fg:
+	@chmod +x scripts/start-px4-sitl.sh
+	./scripts/start-px4-sitl.sh --fg
+
+docker-stop:
+	@chmod +x scripts/start-px4-sitl.sh
+	./scripts/start-px4-sitl.sh --stop
 
 # Docker: Interactive shell
 docker-shell:

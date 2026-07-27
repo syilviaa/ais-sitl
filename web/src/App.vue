@@ -319,28 +319,22 @@ export default {
         })
         let data = await response.json()
         if (!data.success) {
-          this.addEvent('warning', data.hint || data.error || 'SITL unavailable — demo mode')
-          response = await fetch(`${API_BASE}/drone/initialize`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ demo: true }),
-          })
-          data = await response.json()
+          this.addEvent(
+            'error',
+            (data.hint || data.error || 'Init failed') +
+              ' — run ./scripts/start-px4-sitl.sh'
+          )
+          return
         }
-        if (data.success) {
-          await fetch(`${API_BASE}/drone/wait-ready`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ timeout: 30 }),
-          })
-          this.droneReady = true
-          requestTelemetryStart()
-          const label = data.demo_mode ? 'Demo ready — Astana home' : 'SITL ready — Astana home'
-          this.addEvent('success', label)
-          if (this.$refs.mapComponent) this.$refs.mapComponent.clearTrail()
-        } else {
-          this.addEvent('error', data.hint || data.error || 'Init failed')
-        }
+        await fetch(`${API_BASE}/drone/wait-ready`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ timeout: 30 }),
+        })
+        this.droneReady = true
+        requestTelemetryStart()
+        this.addEvent('success', 'SITL ready — Astana home')
+        if (this.$refs.mapComponent) this.$refs.mapComponent.clearTrail()
       } catch (e) {
         this.addEvent('error', `Init: ${e.message}`)
       }
