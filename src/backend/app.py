@@ -35,6 +35,7 @@ from src.backend.services.recording_service import RecordingService
 from src.backend.services.geofence_service import GeofenceService
 from src.backend.services.metrics_service import MetricsService
 from src.backend import database
+from src.backend.async_runner import run_async, schedule_coroutine
 from src.autopilot.geofence import GeofenceValidator
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,7 @@ def create_app(config=None):
     app.geofence_service.set_database(session_factory)
     app.metrics_service = MetricsService()
     app.clients = set()
+    app.pending_telemetry_clients = set()
 
     def broadcast_telemetry(payload):
         """Send a collector snapshot to explicitly subscribed clients only."""
@@ -111,12 +113,12 @@ def create_app(config=None):
     app.configure_telemetry_service = configure_telemetry_service
 
     def run_telemetry_service(service):
-        """Run the existing async collector in one SocketIO background task."""
-        asyncio.run(service.run_forever())
+        """Run telemetry collector on the shared MAVSDK event loop."""
+        schedule_coroutine(service.run_forever())
 
     def run_failsafe_service(service):
-        """Run failsafe monitor in background."""
-        asyncio.run(service.start())
+        """Run failsafe monitor on the shared MAVSDK event loop."""
+        schedule_coroutine(service.start())
 
     async def geofence_telemetry_guard(snapshot):
         """Hold position if drone enters an active NFZ (TZ §2.3)."""
@@ -180,7 +182,7 @@ def create_app(config=None):
     def drone_initialize():
         """Initialize and connect to drone."""
         try:
-            asyncio.run(app.drone_service.initialize())
+            run_async(app.drone_service.initialize())
 
             # Initialize other services
             drone = app.drone_service.drone
@@ -199,12 +201,17 @@ def create_app(config=None):
             )
             if app.telemetry_service and app.drone_service.drone:
                 try:
-                    asyncio.run(app.failsafe_service.initialize())
+                    run_async(app.failsafe_service.initialize())
                     socketio.start_background_task(
                         run_failsafe_service, app.failsafe_service
                     )
                 except Exception as fs_exc:
                     logger.warning("Failsafe not started: %s", fs_exc)
+
+            if app.telemetry_service:
+                for client_id in list(app.pending_telemetry_clients):
+                    app.telemetry_service.register_client(client_id)
+                app.pending_telemetry_clients.clear()
 
             return jsonify({
                 "success": True,
@@ -219,7 +226,7 @@ def create_app(config=None):
     @error_handler
     def drone_status():
         """Get current drone status."""
-        status = asyncio.run(app.drone_service.get_status())
+        status = run_async(app.drone_service.get_status())
         return jsonify(status)
 
     @app.route('/api/drone/wait-ready', methods=['POST'])
@@ -228,7 +235,7 @@ def create_app(config=None):
         """Wait for drone to be ready (GPS + home)."""
         timeout = request.json.get('timeout', 30) if request.json else 30
         try:
-            asyncio.run(app.drone_service.wait_until_ready(timeout_s=timeout))
+            run_async(app.drone_service.wait_until_ready(timeout_s=timeout))
             return jsonify({"success": True, "message": "Drone ready"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -238,7 +245,7 @@ def create_app(config=None):
     def drone_arm():
         """Arm motors."""
         try:
-            asyncio.run(app.drone_service.arm())
+            run_async(app.drone_service.arm())
             return jsonify({"success": True, "message": "Armed"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -248,7 +255,7 @@ def create_app(config=None):
     def drone_disarm():
         """Disarm motors."""
         try:
-            asyncio.run(app.drone_service.disarm())
+            run_async(app.drone_service.disarm())
             return jsonify({"success": True, "message": "Disarmed"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -259,7 +266,7 @@ def create_app(config=None):
         """Takeoff to altitude."""
         altitude = request.json.get('altitude', 50) if request.json else 50
         try:
-            asyncio.run(app.drone_service.takeoff(altitude))
+            run_async(app.drone_service.takeoff(altitude))
             return jsonify({
                 "success": True,
                 "message": f"Takeoff to {altitude}m",
@@ -273,7 +280,7 @@ def create_app(config=None):
     def drone_land():
         """Land at current position."""
         try:
-            asyncio.run(app.drone_service.land())
+            run_async(app.drone_service.land())
             return jsonify({"success": True, "message": "Landing"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -283,7 +290,7 @@ def create_app(config=None):
     def drone_hold():
         """Hold position (hover)."""
         try:
-            asyncio.run(app.drone_service.hold_position())
+            run_async(app.drone_service.hold_position())
             return jsonify({"success": True, "message": "Holding position"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -297,7 +304,7 @@ def create_app(config=None):
             if request.json else 'api_request'
         )
         try:
-            asyncio.run(app.drone_service.return_to_launch(reason=reason))
+            run_async(app.drone_service.return_to_launch(reason=reason))
             return jsonify({
                 "success": True,
                 "message": "RTL initiated",
@@ -318,7 +325,7 @@ def create_app(config=None):
             return jsonify({"error": "Mission service not initialized"}), 500
 
         waypoints = request.json.get('waypoints', []) if request.json else []
-        result = asyncio.run(app.mission_service.validate_mission(waypoints))
+        result = run_async(app.mission_service.validate_mission(waypoints))
         return jsonify(result)
 
     @app.route('/api/mission/upload', methods=['POST'])
@@ -329,7 +336,7 @@ def create_app(config=None):
             return jsonify({"error": "Mission service not initialized"}), 500
 
         waypoints = request.json.get('waypoints', []) if request.json else []
-        result = asyncio.run(app.mission_service.upload_mission(waypoints))
+        result = run_async(app.mission_service.upload_mission(waypoints))
         return jsonify(result)
 
     @app.route('/api/mission/export-plan', methods=['POST'])
@@ -341,7 +348,7 @@ def create_app(config=None):
         data = request.json or {}
         waypoints = data.get('waypoints', [])
         name = data.get('name', 'AIS Mission')
-        result = asyncio.run(app.mission_service.export_plan(waypoints, name=name))
+        result = run_async(app.mission_service.export_plan(waypoints, name=name))
         return jsonify(result)
 
     @app.route('/api/mission/start', methods=['POST'])
@@ -351,7 +358,7 @@ def create_app(config=None):
         if not app.mission_service:
             return jsonify({"error": "Mission service not initialized"}), 500
 
-        result = asyncio.run(app.mission_service.start_mission())
+        result = run_async(app.mission_service.start_mission())
         return jsonify(result)
 
     @app.route('/api/mission/pause', methods=['POST'])
@@ -361,7 +368,7 @@ def create_app(config=None):
         if not app.mission_service:
             return jsonify({"error": "Mission service not initialized"}), 500
 
-        result = asyncio.run(app.mission_service.pause_mission())
+        result = run_async(app.mission_service.pause_mission())
         return jsonify(result)
 
     @app.route('/api/mission/resume', methods=['POST'])
@@ -371,7 +378,7 @@ def create_app(config=None):
         if not app.mission_service:
             return jsonify({"error": "Mission service not initialized"}), 500
 
-        result = asyncio.run(app.mission_service.resume_mission())
+        result = run_async(app.mission_service.resume_mission())
         return jsonify(result)
 
     @app.route('/api/mission/abort', methods=['POST'])
@@ -381,7 +388,7 @@ def create_app(config=None):
         if not app.mission_service:
             return jsonify({"error": "Mission service not initialized"}), 500
 
-        result = asyncio.run(app.mission_service.abort_mission())
+        result = run_async(app.mission_service.abort_mission())
         return jsonify(result)
 
     @app.route('/api/mission/progress', methods=['GET'])
@@ -391,7 +398,7 @@ def create_app(config=None):
         if not app.mission_service:
             return jsonify({"error": "Mission service not initialized"}), 500
 
-        progress = asyncio.run(app.mission_service.get_progress())
+        progress = run_async(app.mission_service.get_progress())
         return jsonify(progress)
 
     @app.route('/api/mission/history', methods=['GET'])
@@ -401,7 +408,7 @@ def create_app(config=None):
         if not app.mission_service:
             return jsonify({"error": "Mission service not initialized"}), 500
 
-        history = asyncio.run(app.mission_service.get_history())
+        history = run_async(app.mission_service.get_history())
         return jsonify(history)
 
     # =====================================================================
@@ -415,7 +422,7 @@ def create_app(config=None):
         if not app.telemetry_service:
             return jsonify({"error": "Telemetry service not initialized"}), 500
 
-        latest = asyncio.run(app.telemetry_service.get_latest())
+        latest = run_async(app.telemetry_service.get_latest())
         return jsonify(latest)
 
     @app.route('/api/telemetry/history', methods=['GET'])
@@ -426,7 +433,7 @@ def create_app(config=None):
             return jsonify({"error": "Telemetry service not initialized"}), 500
 
         count = request.args.get('count', 10, type=int)
-        history = asyncio.run(app.telemetry_service.get_history(count=count))
+        history = run_async(app.telemetry_service.get_history(count=count))
         return jsonify({"count": len(history), "data": history})
 
     @app.route('/api/telemetry/stats', methods=['GET'])
@@ -436,7 +443,7 @@ def create_app(config=None):
         if not app.telemetry_service:
             return jsonify({"error": "Telemetry service not initialized"}), 500
 
-        stats = asyncio.run(app.telemetry_service.get_statistics())
+        stats = run_async(app.telemetry_service.get_statistics())
         return jsonify(stats)
 
     # =====================================================================
@@ -450,7 +457,7 @@ def create_app(config=None):
         if not app.failsafe_service:
             return jsonify({"error": "Failsafe service not initialized"}), 500
 
-        status = asyncio.run(app.failsafe_service.get_status())
+        status = run_async(app.failsafe_service.get_status())
         return jsonify(status)
 
     @app.route('/api/failsafe/events', methods=['GET'])
@@ -461,7 +468,7 @@ def create_app(config=None):
             return jsonify({"error": "Failsafe service not initialized"}), 500
 
         limit = request.args.get('limit', 50, type=int)
-        events = asyncio.run(app.failsafe_service.get_events(limit=limit))
+        events = run_async(app.failsafe_service.get_events(limit=limit))
         return jsonify(events)
 
     # =====================================================================
@@ -480,28 +487,28 @@ def create_app(config=None):
         if not name:
             return jsonify({"error": "Drone name required"}), 400
 
-        result = asyncio.run(app.fleet_service.add_drone(name, host, port))
+        result = run_async(app.fleet_service.add_drone(name, host, port))
         return jsonify(result)
 
     @app.route('/api/fleet/remove-drone/<drone_id>', methods=['DELETE'])
     @error_handler
     def fleet_remove_drone(drone_id):
         """Remove drone from fleet."""
-        result = asyncio.run(app.fleet_service.remove_drone(drone_id))
+        result = run_async(app.fleet_service.remove_drone(drone_id))
         return jsonify(result)
 
     @app.route('/api/fleet/status', methods=['GET'])
     @error_handler
     def fleet_status():
         """Get status of all drones in fleet."""
-        result = asyncio.run(app.fleet_service.get_fleet_status())
+        result = run_async(app.fleet_service.get_fleet_status())
         return jsonify(result)
 
     @app.route('/api/fleet/conflicts', methods=['GET'])
     @error_handler
     def fleet_conflicts():
         """Check for airspace conflicts."""
-        result = asyncio.run(app.fleet_service.check_conflicts())
+        result = run_async(app.fleet_service.check_conflicts())
         return jsonify(result)
 
     @app.route('/api/fleet/coordinated-takeoff', methods=['POST'])
@@ -516,7 +523,7 @@ def create_app(config=None):
         if not drone_names:
             return jsonify({"error": "Drone list required"}), 400
 
-        result = asyncio.run(app.fleet_service.coordinated_takeoff(drone_names, altitude, delay))
+        result = run_async(app.fleet_service.coordinated_takeoff(drone_names, altitude, delay))
         return jsonify(result)
 
     @app.route('/api/fleet/broadcast', methods=['POST'])
@@ -529,14 +536,14 @@ def create_app(config=None):
         if not command:
             return jsonify({"error": "Command required"}), 400
 
-        result = asyncio.run(app.fleet_service.broadcast_command(command, data))
+        result = run_async(app.fleet_service.broadcast_command(command, data))
         return jsonify(result)
 
     @app.route('/api/fleet/emergency-stop', methods=['POST'])
     @error_handler
     def fleet_emergency_stop():
         """Emergency stop all drones."""
-        result = asyncio.run(app.fleet_service.emergency_stop())
+        result = run_async(app.fleet_service.emergency_stop())
         return jsonify(result)
 
     # =====================================================================
@@ -547,21 +554,21 @@ def create_app(config=None):
     @error_handler
     def recording_start(mission_id):
         """Start recording a mission."""
-        result = asyncio.run(app.recording_service.start_recording(mission_id))
+        result = run_async(app.recording_service.start_recording(mission_id))
         return jsonify(result)
 
     @app.route('/api/recording/stop/<mission_id>', methods=['POST'])
     @error_handler
     def recording_stop(mission_id):
         """Stop recording and save mission."""
-        result = asyncio.run(app.recording_service.stop_recording(mission_id))
+        result = run_async(app.recording_service.stop_recording(mission_id))
         return jsonify(result)
 
     @app.route('/api/recording/get/<mission_id>', methods=['GET'])
     @error_handler
     def recording_get(mission_id):
         """Get recording details."""
-        result = asyncio.run(app.recording_service.get_recording(mission_id))
+        result = run_async(app.recording_service.get_recording(mission_id))
         return jsonify(result)
 
     @app.route('/api/recording/list', methods=['GET'])
@@ -569,7 +576,7 @@ def create_app(config=None):
     def recording_list():
         """List all recordings."""
         limit = request.args.get('limit', 50, type=int)
-        result = asyncio.run(app.recording_service.list_recordings(limit))
+        result = run_async(app.recording_service.list_recordings(limit))
         return jsonify(result)
 
     @app.route('/api/recording/playback/<mission_id>', methods=['GET'])
@@ -577,14 +584,14 @@ def create_app(config=None):
     def recording_playback(mission_id):
         """Get playback timeline for a recording."""
         speed = request.args.get('speed', 1.0, type=float)
-        result = asyncio.run(app.recording_service.get_playback_timeline(mission_id, speed))
+        result = run_async(app.recording_service.get_playback_timeline(mission_id, speed))
         return jsonify(result)
 
     @app.route('/api/recording/delete/<mission_id>', methods=['DELETE'])
     @error_handler
     def recording_delete(mission_id):
         """Delete a recording."""
-        result = asyncio.run(app.recording_service.delete_recording(mission_id))
+        result = run_async(app.recording_service.delete_recording(mission_id))
         return jsonify(result)
 
     # =====================================================================
@@ -604,14 +611,14 @@ def create_app(config=None):
         if not name or not polygon:
             return jsonify({"error": "Name and polygon required"}), 400
 
-        result = asyncio.run(app.geofence_service.create_zone(name, polygon, altitude_min, altitude_max))
+        result = run_async(app.geofence_service.create_zone(name, polygon, altitude_min, altitude_max))
         return jsonify(result)
 
     @app.route('/api/geofence/get/<zone_name>', methods=['GET'])
     @error_handler
     def geofence_get(zone_name):
         """Get geofence zone details."""
-        result = asyncio.run(app.geofence_service.get_zone(zone_name))
+        result = run_async(app.geofence_service.get_zone(zone_name))
         return jsonify(result)
 
     @app.route('/api/geofence/geojson', methods=['GET'])
@@ -630,7 +637,7 @@ def create_app(config=None):
     def geofence_list():
         """List all geofence zones."""
         active_only = request.args.get('active', 'true', type=str).lower() == 'true'
-        result = asyncio.run(app.geofence_service.list_zones(active_only))
+        result = run_async(app.geofence_service.list_zones(active_only))
         return jsonify(result)
 
     @app.route('/api/geofence/update/<zone_name>', methods=['POST'])
@@ -643,7 +650,7 @@ def create_app(config=None):
         altitude_max = data.get('altitude_max')
         active = data.get('active')
 
-        result = asyncio.run(app.geofence_service.update_zone(
+        result = run_async(app.geofence_service.update_zone(
             zone_name, polygon, altitude_min, altitude_max, active
         ))
         return jsonify(result)
@@ -652,7 +659,7 @@ def create_app(config=None):
     @error_handler
     def geofence_delete(zone_name):
         """Delete geofence zone."""
-        result = asyncio.run(app.geofence_service.delete_zone(zone_name))
+        result = run_async(app.geofence_service.delete_zone(zone_name))
         return jsonify(result)
 
     @app.route('/api/geofence/validate-mission', methods=['POST'])
@@ -665,7 +672,7 @@ def create_app(config=None):
         if not waypoints:
             return jsonify({"error": "Waypoints required"}), 400
 
-        result = asyncio.run(app.geofence_service.validate_mission(waypoints))
+        result = run_async(app.geofence_service.validate_mission(waypoints))
         return jsonify(result)
 
     @app.route('/api/geofence/check-position', methods=['POST'])
@@ -679,7 +686,7 @@ def create_app(config=None):
         if not drone_id:
             return jsonify({"error": "Drone ID required"}), 400
 
-        result = asyncio.run(app.geofence_service.check_position(drone_id, position))
+        result = run_async(app.geofence_service.check_position(drone_id, position))
         return jsonify(result)
 
     @app.route('/api/geofence/violations/<zone_name>', methods=['GET'])
@@ -687,7 +694,7 @@ def create_app(config=None):
     def geofence_violations(zone_name):
         """Get violation history for a zone."""
         limit = request.args.get('limit', 100, type=int)
-        result = asyncio.run(app.geofence_service.get_violations(zone_name, limit))
+        result = run_async(app.geofence_service.get_violations(zone_name, limit))
         return jsonify(result)
 
     # =====================================================================
@@ -716,15 +723,15 @@ def create_app(config=None):
         try:
             # Update metrics from active services
             if app.fleet_service:
-                fleet_status = asyncio.run(app.fleet_service.get_fleet_status())
+                fleet_status = run_async(app.fleet_service.get_fleet_status())
                 app.metrics_service.update_fleet_metrics(fleet_status)
 
             if app.telemetry_service:
-                telemetry_stats = asyncio.run(app.telemetry_service.get_statistics())
+                telemetry_stats = run_async(app.telemetry_service.get_statistics())
                 app.metrics_service.update_telemetry_metrics(telemetry_stats)
 
             if app.geofence_service:
-                zones = asyncio.run(app.geofence_service.list_zones())
+                zones = run_async(app.geofence_service.list_zones())
                 geofence_data = {
                     "zones_active": zones.get("count", 0),
                     "violations_total": 0,  # Would need to aggregate from zones
@@ -800,10 +807,14 @@ def create_app(config=None):
         client_id = request.sid
         if app.telemetry_service:
             app.telemetry_service.register_client(client_id)
+            app.pending_telemetry_clients.discard(client_id)
             emit('telemetry_started', {'client_id': client_id})
         else:
-            emit('telemetry_error', {
-                'message': 'Telemetry service is not initialized',
+            app.pending_telemetry_clients.add(client_id)
+            emit('telemetry_started', {
+                'client_id': client_id,
+                'pending': True,
+                'message': 'Awaiting drone initialize — click Initialize SITL',
             })
 
     @socketio.on('stop_telemetry')
@@ -818,7 +829,7 @@ def create_app(config=None):
     def on_fleet_status():
         """Get fleet status on demand."""
         try:
-            result = asyncio.run(app.fleet_service.get_fleet_status())
+            result = run_async(app.fleet_service.get_fleet_status())
             emit('fleet_status', result)
         except Exception as e:
             logger.error(f"Fleet status error: {e}")
@@ -833,7 +844,7 @@ def create_app(config=None):
             """Periodically broadcast fleet status to all clients."""
             while True:
                 try:
-                    result = asyncio.run(app.fleet_service.get_fleet_status())
+                    result = run_async(app.fleet_service.get_fleet_status())
                     for cid in app.clients:
                         socketio.emit('fleet_status', result, to=cid)
                     socketio.sleep(1)

@@ -11,6 +11,7 @@ Provides high-level operations:
 
 import logging
 import asyncio
+import threading
 from typing import Optional, Dict, Any
 
 try:
@@ -30,11 +31,11 @@ class DroneService:
     def __init__(self):
         """Initialize drone service."""
         self.drone: Optional[Drone] = None
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def initialize(self, host: str = "127.0.0.1", port: int = 14540):
         """Initialize and connect to drone."""
-        async with self._lock:
+        with self._lock:
             if self.drone is not None:
                 return True
 
@@ -55,7 +56,7 @@ class DroneService:
 
     async def disconnect(self):
         """Disconnect from drone."""
-        async with self._lock:
+        with self._lock:
             if self.drone:
                 try:
                     await self.drone.disconnect()
