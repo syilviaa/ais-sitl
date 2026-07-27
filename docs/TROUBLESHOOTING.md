@@ -156,8 +156,8 @@ Timed out waiting for PX4 SITL on udp://127.0.0.1:14540
 **PX4 mavlink status shows:** `UDP (14580, remote port: 14540)`
 
 This means PX4 **sends telemetry to 14540** and **listens on 14580**.
-MAVSDK must use Python format `udp://127.0.0.1:14540` (not `udpin://`) **and**
-`udpout://127.0.0.1:14580` to send commands back.
+MAVSDK must **listen** on the remote port with `udpin://0.0.0.0:14540`.
+Do **not** use `udp://127.0.0.1:14540` (outbound client) or bind the same port twice.
 
 **Solutions:**
 1. Ensure PX4 SITL is running:
@@ -165,10 +165,11 @@ MAVSDK must use Python format `udp://127.0.0.1:14540` (not `udpin://`) **and**
    docker run -it --rm ais-sitl:latest gazebo
    ```
 
-2. Check nothing else is bound to port 14540:
+2. Check nothing else is bound to port 14540 (QGC, old mavsdk_server):
    ```bash
    lsof -i :14540
    lsof -i :14580
+   kill <PID>   # if another process holds 14540
    ```
 
 3. Initialize with explicit ports (dashboard/API):

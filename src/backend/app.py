@@ -204,7 +204,7 @@ def create_app(config=None):
                     port=port,
                     sitl_port=sitl_port,
                 ),
-                timeout=30,
+                timeout=45,
             )
 
             # Initialize other services

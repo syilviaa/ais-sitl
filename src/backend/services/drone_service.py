@@ -71,7 +71,7 @@ class DroneService:
             )
             drone = Drone(host=host, port=port, sitl_port=sitl_port)
             try:
-                await drone.connect()
+                await drone.connect(timeout_s=20.0)
                 self.drone = drone
                 logger.info("✅ Drone initialized")
                 return True
