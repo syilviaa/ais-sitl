@@ -55,7 +55,8 @@ class TestDroneEndpoints:
             mock_drone.return_value = mock_instance
 
             response = client.post('/api/drone/initialize')
-            assert response.status_code in [200, 500]  # May fail if SITL not running
+            # 503 when the SITL readiness pre-check rejects the connect attempt.
+            assert response.status_code in [200, 500, 503]
 
     def test_drone_status_without_init(self, client):
         """Test drone status when not initialized."""

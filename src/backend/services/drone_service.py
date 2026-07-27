@@ -31,8 +31,16 @@ logger = logging.getLogger(__name__)
 class DroneService:
     """Service layer for drone operations."""
 
-    def __init__(self):
-        """Initialize drone service."""
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 14540,
+        sitl_port: int = 14580,
+    ):
+        """Initialize drone service with the endpoint used by ``initialize``."""
+        self.host = host
+        self.port = port
+        self.sitl_port = sitl_port
         self.drone: Optional[Drone] = None
         self.demo_mode: bool = False
         self._lock: Optional[asyncio.Lock] = None
@@ -64,11 +72,14 @@ class DroneService:
 
     async def initialize(
         self,
-        host: str = "127.0.0.1",
-        port: int = 14540,
-        sitl_port: int = 14580,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        sitl_port: Optional[int] = None,
     ):
         """Initialize and connect to drone."""
+        host = host or self.host
+        port = port or self.port
+        sitl_port = sitl_port or self.sitl_port
         if not HAS_MAVSDK or Drone is None:
             detail = IMPORT_ERROR or "MAVSDK not installed"
             raise RuntimeError(
@@ -100,6 +111,17 @@ class DroneService:
                 logger.exception("❌ Initialization failed: %s", e)
                 self.drone = None
                 raise
+
+    async def ensure_link(self) -> bool:
+        """Recover a dead MAVSDK link. True when a new system object was created."""
+        drone = self.drone
+        if not drone or self.demo_mode or not hasattr(drone, "ensure_link"):
+            return False
+        if drone.link_alive():
+            return False
+        logger.warning("MAVSDK link lost — attempting recovery")
+        await drone.ensure_link()
+        return True
 
     async def disconnect(self):
         """Disconnect from drone."""

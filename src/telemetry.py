@@ -16,15 +16,12 @@ Owner: Мерей
 import asyncio
 import logging
 import time
-from typing import Optional, List, Callable, TYPE_CHECKING
+from typing import Optional, List, Callable
 from collections import deque
 from datetime import datetime
 
 from src.models import TelemetrySnapshot, GPSFixType, FlightMode
 from src.telemetry_battery import BatterySimulator
-
-if TYPE_CHECKING:
-    from mavsdk import System
 
 from src.mavsdk_import import IMPORT_ERROR, MAVSDK_AVAILABLE, System
 
@@ -78,6 +75,7 @@ class TelemetryCollector:
         self._latest_snapshot: Optional[TelemetrySnapshot] = None
         self._history: deque = deque(maxlen=history_size)
         self._demo_drone = None
+        self._drone_source = None
         self._battery_sim = BatterySimulator()
 
         # Collection control
@@ -121,6 +119,20 @@ class TelemetryCollector:
         self._start_stream_consumers()
         self._collection_task = asyncio.create_task(self._collection_loop())
 
+    async def rebind_system(self, system) -> None:
+        """Attach to a fresh MAVSDK system after a link recovery."""
+        for task in self._stream_tasks:
+            if not task.done():
+                task.cancel()
+        if self._stream_tasks:
+            await asyncio.gather(*self._stream_tasks, return_exceptions=True)
+        self._stream_tasks = []
+        self._system = system
+        for key in self._stream_cache:
+            self._stream_cache[key] = None
+        if self._collecting:
+            self._start_stream_consumers()
+
     async def stop(self):
         """Stop telemetry collection."""
         logger.info("🔴 Stopping telemetry collection")
@@ -147,6 +159,15 @@ class TelemetryCollector:
     def set_demo_drone(self, drone) -> None:
         """Use demo drone telemetry instead of MAVSDK/stub."""
         self._demo_drone = drone
+
+    def set_drone_source(self, drone) -> None:
+        """Read from the Drone's existing streams instead of opening new ones.
+
+        mavsdk_server aborts on MAVLink heartbeat timeout once its user callback
+        queue backs up, which happens as soon as the collector duplicates the
+        seven subscriptions the Drone already holds on the same server.
+        """
+        self._drone_source = drone
 
     def get_latest(self) -> Optional[TelemetrySnapshot]:
         """
@@ -264,6 +285,11 @@ class TelemetryCollector:
         if self._demo_drone is not None:
             return self._snapshot_from_demo(await self._demo_drone.get_telemetry())
 
+        if self._drone_source is not None:
+            return self._snapshot_from_drone(
+                await self._drone_source.get_telemetry()
+            )
+
         if not MAVSDK_AVAILABLE or not self._system:
             return self._get_stub_telemetry()
 
@@ -321,6 +347,8 @@ class TelemetryCollector:
 
     def _start_stream_consumers(self) -> None:
         if not MAVSDK_AVAILABLE or not self._system or self._stream_tasks:
+            return
+        if self._demo_drone is not None or self._drone_source is not None:
             return
         self._stream_tasks = [
             asyncio.create_task(self._consume_position()),
@@ -590,6 +618,39 @@ class TelemetryCollector:
             armed=data.get("armed", False),
             flight_mode=data.get("mode", data.get("flight_mode", "manual")),
             in_air=data.get("alt", 0.0) > 0.5,
+        )
+
+    def _snapshot_from_drone(self, data: dict) -> TelemetrySnapshot:
+        """Build snapshot from the Drone's cached MAVSDK telemetry."""
+        vx = data.get("vx") or 0.0
+        vy = data.get("vy") or 0.0
+        vz = data.get("vz") or 0.0
+        alt = data.get("alt") or data.get("relative_altitude_m") or 0.0
+        armed = bool(data.get("armed"))
+        mode = data.get("mode") or data.get("flight_mode") or "unknown"
+        return TelemetrySnapshot(
+            timestamp=data.get("timestamp") or time.time(),
+            lat=data.get("lat") or 0.0,
+            lon=data.get("lon") or 0.0,
+            altitude_m=alt,
+            altitude_msl_m=data.get("absolute_altitude_m") or 0.0,
+            vx=vx,
+            vy=vy,
+            vz=vz,
+            speed_m_s=self._speed_m_s(vx, vy, vz),
+            roll_deg=data.get("roll") or 0.0,
+            pitch_deg=data.get("pitch") or 0.0,
+            yaw_deg=data.get("yaw") or 0.0,
+            battery_percent=self._battery_sim.tick(
+                armed=armed,
+                mode=mode,
+                alt_m=alt,
+            ),
+            gps_fix=data.get("gps_fix") or data.get("gps_status") or "3d",
+            satellites=data.get("satellites") or 0,
+            armed=armed,
+            flight_mode=mode,
+            in_air=alt > 0.5,
         )
 
     def _get_stub_telemetry(self) -> TelemetrySnapshot:

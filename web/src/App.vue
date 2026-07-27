@@ -307,14 +307,19 @@ export default {
         })
         const data = await response.json()
         if (data.success) {
-          await fetch(`${API_BASE}/drone/wait-ready`, {
+          const readyRes = await fetch(`${API_BASE}/drone/wait-ready`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ timeout: 30 }),
+            body: JSON.stringify({ timeout: 45 }),
           })
+          const ready = await readyRes.json().catch(() => ({}))
           this.droneReady = true
           requestTelemetryStart()
-          this.addEvent('success', 'SITL готов — дом Astana')
+          if (ready.success) {
+            this.addEvent('success', 'SITL готов — дом Astana')
+          } else {
+            this.addEvent('warning', `SITL подключён, но не готов: ${ready.error || 'GPS/home'}`)
+          }
           if (this.$refs.mapComponent) this.$refs.mapComponent.clearTrail()
         } else {
           this.addEvent('error', (data.hint || data.error || 'Ошибка подключения') + ' — ./scripts/start-px4-sitl.sh')

@@ -52,10 +52,11 @@ export default {
     },
     horizontalSpeed() {
       if (!this.dronePosition) return 0
-      if (this.dronePosition.speed) return this.dronePosition.speed
+      if (this.dronePosition.speed != null) return Number(this.dronePosition.speed)
       const vx = this.dronePosition.vx || 0
       const vy = this.dronePosition.vy || 0
-      return Math.sqrt(vx * vx + vy * vy)
+      const vz = this.dronePosition.vz || 0
+      return Math.hypot(vx, vy, vz)
     },
     batteryClass() {
       const b = this.dronePosition?.battery || 0

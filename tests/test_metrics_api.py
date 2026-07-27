@@ -7,12 +7,16 @@ import json
 from unittest.mock import AsyncMock, patch
 
 from src.backend.app import create_app
+from src.backend.services.telemetry_service import TelemetryServiceAPI
 
 
 @pytest.fixture
 def app():
     """Create Flask test app."""
     app, socketio = create_app({'TESTING': True})
+    # The real app creates this only after a drone connects.
+    if app.telemetry_service is None:
+        app.telemetry_service = TelemetryServiceAPI()
     return app
 
 

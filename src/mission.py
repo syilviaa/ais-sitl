@@ -13,12 +13,9 @@ Owner: Мерей
 
 import asyncio
 import logging
-from typing import List, Optional, Callable, TYPE_CHECKING
+from typing import List, Optional, Callable
 
 from src.models import Waypoint, MissionItem, MissionProgress
-
-if TYPE_CHECKING:
-    from mavsdk import System
 
 from src.mavsdk_import import (
     IMPORT_ERROR,

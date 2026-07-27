@@ -1,7 +1,7 @@
 <template>
   <div class="video-wrap">
     <img
-      v-show="useRealVideo && !videoError"
+      v-show="useRealVideo && !videoError && hasLiveFrame"
       ref="videoImg"
       class="video-real"
       alt="Камера Gazebo"
@@ -9,7 +9,7 @@
       @error="onVideoError"
     />
     <canvas
-      v-show="!useRealVideo || videoError"
+      v-show="!useRealVideo || videoError || !hasLiveFrame"
       ref="canvas"
       class="video-canvas"
       width="640"
@@ -20,10 +20,15 @@
       <small>{{ idleHint }}</small>
     </div>
     <div v-else-if="useRealVideo && !hasLiveFrame && !videoError" class="video-overlay waiting">
-      Ожидание камеры Gazebo…
+      Ожидание камеры Gazebo… · синтетический FPV
     </div>
     <div v-else-if="active" class="video-overlay live">
       <span class="live-dot" /> ЭФИР · {{ sourceLabel }}
+    </div>
+    <div v-if="active && useRealVideo && hasLiveFrame && !videoError" class="video-hud">
+      <span>ВЫС {{ hudAlt }} м</span>
+      <span>СКР {{ hudSpeed }} м/с</span>
+      <span>КУР {{ hudYaw }}°</span>
     </div>
   </div>
 </template>
@@ -63,6 +68,17 @@ export default {
         return 'Gazebo + backend: ./scripts/start-px4-gazebo.sh и start-backend.sh'
       }
       return 'SIH без камеры — синтетический FPV после подключения SITL'
+    },
+    hudAlt() {
+      return (this.telemetry?.alt ?? 0).toFixed(1)
+    },
+    hudSpeed() {
+      const t = this.telemetry || {}
+      const spd = t.speed ?? Math.hypot(t.vx || 0, t.vy || 0, t.vz || 0)
+      return spd.toFixed(1)
+    },
+    hudYaw() {
+      return (this.telemetry?.yaw ?? 0).toFixed(0)
     },
   },
   watch: {
@@ -117,7 +133,7 @@ export default {
     },
     startFramePoll() {
       if (this.framePoll || !this.useRealVideo) return
-      this.framePoll = setInterval(() => this.fetchSnapshot(), 150)
+      this.framePoll = setInterval(() => this.fetchSnapshot(), 200)
       this.fetchSnapshot()
     },
     stopFramePoll() {
@@ -132,6 +148,12 @@ export default {
       if (!this.useRealVideo || !this.active) return
       try {
         const res = await fetch(`${this.snapshotBase}?t=${Date.now()}`)
+        if (res.status === 503) {
+          // Relay is up, Gazebo has not produced a frame yet — keep polling.
+          this.hasLiveFrame = false
+          if (!this.rafId) this.startSynthetic()
+          return
+        }
         if (!res.ok) throw new Error(`snapshot ${res.status}`)
         const blob = await res.blob()
         if (blob.size < 2000) return
@@ -260,14 +282,14 @@ export default {
   margin-top: 4px;
 }
 .video-overlay.waiting {
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  top: 8px;
+  right: 8px;
   background: rgba(15, 23, 42, 0.85);
-  color: #94a3b8;
-  font-size: 0.75rem;
+  color: #cbd5e1;
+  font-size: 0.68rem;
   font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
 }
 .video-overlay.live {
   top: 8px;
@@ -291,5 +313,19 @@ export default {
 }
 @keyframes pulse {
   50% { opacity: 0.4; }
+}
+.video-hud {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #e2e8f0;
+  font: 600 12px monospace;
+  padding: 6px 10px;
+  border-radius: 4px;
+  pointer-events: none;
 }
 </style>

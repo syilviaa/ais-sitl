@@ -212,45 +212,27 @@ class VideoRelay:
         """Start relay if GStreamer available."""
         return self.start()
 
-    def get_snapshot_jpeg(self) -> bytes:
-        """Latest JPEG frame or placeholder."""
+    def get_snapshot_jpeg(self) -> Optional[bytes]:
+        """Latest JPEG frame, or None while the Gazebo stream is not ready."""
         self.ensure_running()
-        return self.get_latest_frame() or self._make_placeholder_jpeg()
+        return self.get_latest_frame()
 
     def mjpeg_generator(self) -> Generator[bytes, None, None]:
         """Yield multipart MJPEG chunks for Flask Response."""
         if not self.start():
             return
         boundary = b"frame"
-        idle = self._make_placeholder_jpeg()
         while self._running:
-            frame = self.get_latest_frame() or idle
-            yield (
-                b"--"
-                + boundary
-                + b"\r\nContent-Type: image/jpeg\r\n\r\n"
-                + frame
-                + b"\r\n"
-            )
+            frame = self.get_latest_frame()
+            if frame is not None:
+                yield (
+                    b"--"
+                    + boundary
+                    + b"\r\nContent-Type: image/jpeg\r\n\r\n"
+                    + frame
+                    + b"\r\n"
+                )
             time.sleep(0.066)
-
-    @staticmethod
-    def _make_placeholder_jpeg() -> bytes:
-        """Minimal JPEG when Gazebo stream not ready yet."""
-        # 1x1 grey pixel JPEG
-        return bytes.fromhex(
-            "ffd8ffe000104a46494600010100000100010000ffdb004300"
-            "080606070605080707070909080a0c140d0c0b0b0c1912130f"
-            "141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c"
-            "30313434341f27393d38323c2e333432ffdb0043010909090c"
-            "0b0c180d0d1832211c213232323232323232323232323232"
-            "323232323232323232323232323232323232323232323232"
-            "ffc00011080001000103011100021101031101ffc4001f0000"
-            "01050101010101010100000000000000000001020304050607"
-            "08090a0bffc400b5100002010303020403050504040000017d"
-            "01020300041105122131410613516107227114328191a108429"
-            "b1c1152334f0ffd9"
-        )
 
 
 _default_port = int(os.environ.get("VIDEO_UDP_PORT", "5600"))

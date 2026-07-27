@@ -64,6 +64,12 @@ case "${1:-start}" in
     run_gazebo -d --name "$NAME"
     echo "Gazebo SITL: $NAME"
     echo "  Модель:       ${MODEL} (камера → UDP ${VIDEO_PORT} H.264/RTP)"
+    echo "  Мир:          ${WORLD}"
+    if [[ "${WORLD}" == "default" ]]; then
+      echo "                (пустая серая площадка — картинка с камеры почти однотонная)"
+      echo "                PX4_GZ_WORLD=lawn|forest|ridge|baylands ./scripts/start-px4-gazebo.sh"
+      echo "                lawn — лёгкий, forest/ridge — детальнее, baylands — тяжёлый"
+    fi
     echo "  Дом:          ${HOME_LAT}, ${HOME_LON} alt ${HOME_ALT} m"
     echo "  MAVLink:      14550 (QGC), 14580 onboard, 14540 — host/MAVSDK"
     echo "  Видео:        udp://127.0.0.1:${VIDEO_PORT} → /api/video/mjpeg"

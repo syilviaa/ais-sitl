@@ -21,6 +21,25 @@ logger = logging.getLogger(__name__)
 _geofence_validator = GeofenceValidator()
 
 
+def _readable_upload_error(detail: Optional[str]) -> tuple[str, Optional[str]]:
+    """Turn raw MAVSDK/gRPC failures into a message plus a machine-readable type."""
+    if not detail:
+        return "Upload failed", None
+    if "UNAVAILABLE" in detail or "Connection refused" in detail:
+        return (
+            "Связь с MAVSDK потеряна (mavsdk_server недоступен). "
+            "Нажмите «Подключить SITL» и повторите загрузку.",
+            "link_lost",
+        )
+    if "DENIED" in detail.upper():
+        return (
+            "PX4 отклонил миссию. Переведите дрон в Hold/на землю "
+            "и повторите загрузку.",
+            "rejected",
+        )
+    return detail, None
+
+
 class MissionServiceAPI:
     """Service layer for mission operations."""
 
@@ -159,9 +178,11 @@ class MissionServiceAPI:
                 }
             else:
                 detail = getattr(self.service, "_last_upload_error", None)
+                message, error_type = _readable_upload_error(detail)
                 return {
                     "success": False,
-                    "error": detail or "Upload failed",
+                    "error": message,
+                    "error_type": error_type,
                     "mission_id": None,
                 }
 

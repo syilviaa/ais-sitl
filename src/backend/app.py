@@ -106,6 +106,11 @@ def create_app(config=None):
     app.clients = set()
     app.pending_telemetry_clients = set()
 
+    # Spawn the GStreamer relay before any MAVSDK/gRPC session exists: forking a
+    # process that already runs gRPC threads kills mavsdk_server (heartbeat loss).
+    if video_relay.gstreamer_available:
+        video_relay.ensure_running()
+
     def broadcast_telemetry(payload):
         """Send a collector snapshot to explicitly subscribed clients only."""
         service = app.telemetry_service
@@ -154,6 +159,28 @@ def create_app(config=None):
         elif not in_nfz:
             app._geofence_hold_active = False
 
+    async def recover_mavsdk_link() -> bool:
+        """Reconnect a dead MAVSDK link and re-point services at the new system."""
+        if not await app.drone_service.ensure_link():
+            return False
+        drone = app.drone_service.drone
+        system = getattr(drone, "_system", None) if drone else None
+        if app.mission_service:
+            app.mission_service.service._system = system
+        if app.telemetry_service:
+            await app.telemetry_service.collector.rebind_system(system)
+        logger.info("MAVSDK link recovered — services rebound")
+        return True
+
+    def bind_telemetry_source(collector, drone):
+        """Feed the collector from the drone's own streams, never a second set."""
+        if not drone:
+            return
+        if app.drone_service.demo_mode:
+            collector.set_demo_drone(drone)
+        else:
+            collector.set_drone_source(drone)
+
     def finish_drone_services():
         """Wire mission, telemetry, failsafe after drone connect."""
         drone = app.drone_service.drone
@@ -161,15 +188,14 @@ def create_app(config=None):
         app.mission_service = MissionServiceAPI(mavsdk_system)
         if app.telemetry_service is None:
             app.telemetry_service = TelemetryServiceAPI(mavsdk_system)
-            if app.drone_service.demo_mode and drone:
-                app.telemetry_service.collector.set_demo_drone(drone)
+            bind_telemetry_source(app.telemetry_service.collector, drone)
             app.telemetry_service.collector.on_telemetry(geofence_telemetry_guard)
             configure_telemetry_service(app.telemetry_service)
             socketio.start_background_task(
                 run_telemetry_service, app.telemetry_service
             )
-        elif app.drone_service.demo_mode and drone:
-            app.telemetry_service.collector.set_demo_drone(drone)
+        else:
+            bind_telemetry_source(app.telemetry_service.collector, drone)
 
         app.failsafe_service = FailsafeServiceAPI(
             app.drone_service.drone,
@@ -261,8 +287,14 @@ def create_app(config=None):
         """Single JPEG frame (works reliably in browser vs MJPEG stream)."""
         if not video_relay.gstreamer_available:
             return jsonify({'error': 'GStreamer не установлен'}), 503
+        frame = video_relay.get_snapshot_jpeg()
+        if frame is None:
+            return jsonify({
+                'error': 'Кадр с камеры Gazebo ещё не получен',
+                'status': video_relay.status(),
+            }), 503
         return Response(
-            video_relay.get_snapshot_jpeg(),
+            frame,
             mimetype='image/jpeg',
             headers={'Cache-Control': 'no-store'},
         )
@@ -404,7 +436,10 @@ def create_app(config=None):
         """Takeoff to altitude."""
         altitude = request.json.get('altitude', 50) if request.json else 50
         try:
-            run_async(app.drone_service.takeoff(altitude))
+            run_async(
+                app.drone_service.takeoff(altitude),
+                timeout=90 + 2 * float(altitude),
+            )
             return jsonify({
                 "success": True,
                 "message": f"Takeoff to {altitude}m",
@@ -418,7 +453,7 @@ def create_app(config=None):
     def drone_land():
         """Land at current position."""
         try:
-            run_async(app.drone_service.land())
+            run_async(app.drone_service.land(), timeout=240)
             return jsonify({"success": True, "message": "Landing"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -474,7 +509,11 @@ def create_app(config=None):
             return jsonify({"error": "Mission service not initialized"}), 500
 
         waypoints = request.json.get('waypoints', []) if request.json else []
+        run_async(recover_mavsdk_link(), timeout=60)
         result = run_async(app.mission_service.upload_mission(waypoints))
+        if result.get("error_type") == "link_lost":
+            if run_async(recover_mavsdk_link(), timeout=60):
+                result = run_async(app.mission_service.upload_mission(waypoints))
         return jsonify(result)
 
     @app.route('/api/mission/export-plan', methods=['POST'])

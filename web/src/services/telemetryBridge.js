@@ -43,13 +43,26 @@ function normalizeBattery(raw) {
   return Math.max(0, Math.min(100, value))
 }
 
-function horizontalSpeed(raw, vel) {
-  if (raw.speed != null && raw.speed > 0) return Number(raw.speed)
-  if (raw.speed_m_s != null && raw.speed_m_s > 0) return Number(raw.speed_m_s)
-  if (vel.speed != null && vel.speed > 0) return Number(vel.speed)
+function groundSpeed(raw, vel) {
   const vx = Number(vel.vx ?? raw.vx ?? 0)
   const vy = Number(vel.vy ?? raw.vy ?? 0)
-  return Math.hypot(vx, vy)
+  const vz = Number(vel.vz ?? raw.vz ?? 0)
+  if (raw.ground_speed_m_s != null && !Number.isNaN(Number(raw.ground_speed_m_s))) {
+    return Number(raw.ground_speed_m_s)
+  }
+  if (vel.ground_speed_m_s != null && !Number.isNaN(Number(vel.ground_speed_m_s))) {
+    return Number(vel.ground_speed_m_s)
+  }
+  if (raw.speed != null && !Number.isNaN(Number(raw.speed))) {
+    return Number(raw.speed)
+  }
+  if (raw.speed_m_s != null && !Number.isNaN(Number(raw.speed_m_s))) {
+    return Number(raw.speed_m_s)
+  }
+  if (vel.speed != null && !Number.isNaN(Number(vel.speed))) {
+    return Number(vel.speed)
+  }
+  return Math.hypot(vx, vy, vz)
 }
 
 export function normalizeTelemetry(raw) {
@@ -58,7 +71,7 @@ export function normalizeTelemetry(raw) {
     return {
       ...raw,
       battery: normalizeBattery(raw.battery),
-      speed: horizontalSpeed(raw, {}),
+      speed: groundSpeed(raw, {}),
     }
   }
 
@@ -77,7 +90,7 @@ export function normalizeTelemetry(raw) {
     vx: vel.vx ?? raw.vx ?? 0,
     vy: vel.vy ?? raw.vy ?? 0,
     vz: vel.vz ?? raw.vz ?? 0,
-    speed: horizontalSpeed(raw, vel),
+    speed: groundSpeed(raw, vel),
     roll: att.roll ?? raw.roll ?? 0,
     pitch: att.pitch ?? raw.pitch ?? 0,
     yaw: att.yaw ?? raw.yaw ?? 0,

@@ -18,7 +18,7 @@ _ready = threading.Event()
 
 def ensure_loop() -> asyncio.AbstractEventLoop:
     """Start (if needed) and return the shared background event loop."""
-    global _loop, _thread
+    global _thread
 
     if _loop is not None and _loop.is_running():
         return _loop

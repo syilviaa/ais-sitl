@@ -42,7 +42,7 @@ echo "$VALID" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.ge
 ok "mission validate (4 WP, NFZ clear)"
 
 # Export .plan
-PLAN=$(curl -sf -X POST "$BASE/mission/export" \
+PLAN=$(curl -sf -X POST "$BASE/mission/export-plan" \
   -H 'Content-Type: application/json' \
   -d "{\"waypoints\":$WAYPOINTS,\"name\":\"Sprint Demo\"}")
 echo "$PLAN" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('success')" \

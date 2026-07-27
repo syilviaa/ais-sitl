@@ -130,6 +130,7 @@ class FleetService:
             return {
                 "success": True,
                 "message": f"Drone {drone_name} removed",
+                "name": drone_name,
                 "drone_id": drone_id,
             }
 

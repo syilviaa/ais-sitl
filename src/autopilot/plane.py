@@ -383,6 +383,44 @@ class Drone:
                 f"Could not connect to local PX4 SITL: {message}"
             ) from last_error
 
+    @staticmethod
+    def _describe_health(health: Optional[Any]) -> str:
+        """List the PX4 health flags that are still not OK."""
+        if health is None:
+            return "no health report received"
+        flags = {
+            "global_position": "is_global_position_ok",
+            "local_position": "is_local_position_ok",
+            "armable": "is_armable",
+            "gyrometer_calibration": "is_gyrometer_calibration_ok",
+            "accelerometer_calibration": "is_accelerometer_calibration_ok",
+            "magnetometer_calibration": "is_magnetometer_calibration_ok",
+        }
+        missing = [
+            name
+            for name, attr in flags.items()
+            if not getattr(health, attr, True)
+        ]
+        return "not OK: " + ", ".join(missing) if missing else "home not published"
+
+    def link_alive(self) -> bool:
+        """False when the mavsdk_server child has exited (it aborts on heartbeat loss)."""
+        if self._injected_system or self._mavsdk_proc is None:
+            return True
+        return self._mavsdk_proc.poll() is None
+
+    async def ensure_link(self, timeout_s: float = 20.0) -> bool:
+        """Re-establish the MAVSDK link if mavsdk_server died, keeping the API usable."""
+        if not self._connected or self.link_alive():
+            return self._connected
+        tail = self._read_mavsdk_server_log().strip().splitlines()
+        logger.warning(
+            "mavsdk_server exited (%s) — reconnecting",
+            tail[-1] if tail else "no log output",
+        )
+        await self.disconnect()
+        return await self.connect(timeout_s=timeout_s)
+
     async def disconnect(self) -> None:
         """Stop local subscriptions and mark the controller disconnected."""
         async with self._get_lock():
@@ -398,22 +436,32 @@ class Drone:
     async def wait_until_ready(self, timeout_s: float = 30.0) -> bool:
         """Wait until PX4 reports both a valid global GPS and home position."""
         self._require_connected()
+        last_health: Optional[Any] = None
+
+        def ready(health: Any) -> bool:
+            nonlocal last_health
+            last_health = health
+            # PX4 SITL leaves is_home_position_ok False even while publishing a
+            # valid home, so readiness is global position + armable, and the
+            # home stream below confirms home for real.
+            return health.is_global_position_ok and getattr(
+                health, "is_armable", True
+            )
+
         try:
             await self._wait_for_stream(
-                self._system.telemetry.health,
-                lambda health: (
-                    health.is_global_position_ok and health.is_home_position_ok
-                ),
-                timeout_s,
+                self._system.telemetry.health, ready, timeout_s
             )
             await self._wait_for_stream(
                 self._system.telemetry.home,
-                lambda home: home is not None,
+                lambda home: home is not None
+                and getattr(home, "latitude_deg", None) is not None,
                 timeout_s,
             )
         except asyncio.TimeoutError as error:
             raise DroneTimeoutError(
-                "GPS or home position did not become ready"
+                "GPS or home position did not become ready "
+                f"({self._describe_health(last_health)})"
             ) from error
         self._state = DroneState.READY
         return True
@@ -472,12 +520,7 @@ class Drone:
             await self._system.action.set_takeoff_altitude(float(altitude_m))
             await self._system.action.takeoff()
             try:
-                await self._wait_for_stream(
-                    self._system.telemetry.position,
-                    lambda position: position.relative_altitude_m
-                    >= altitude_m - 0.3,
-                    timeout_s or self._command_timeout_s,
-                )
+                await self._wait_for_takeoff_altitude(altitude_m, timeout_s)
             except asyncio.TimeoutError as error:
                 self._state = DroneState.ERROR
                 raise DroneTimeoutError(
@@ -491,12 +534,17 @@ class Drone:
         async with self._get_lock():
             self._require_connected()
             self._state = DroneState.LANDING
+            current_alt = self._telemetry.position.relative_altitude_m or 0.0
             await self._system.action.land()
+            # Descent runs at MPC_LAND_SPEED (0.7 m/s) plus the disarm delay.
+            descent_timeout = timeout_s or max(
+                self._command_timeout_s, 40.0 + current_alt / 0.7
+            )
             try:
                 await self._wait_for_stream(
                     self._system.telemetry.armed,
                     lambda armed: not armed,
-                    timeout_s or self._command_timeout_s,
+                    descent_timeout,
                 )
             except asyncio.TimeoutError as error:
                 self._state = DroneState.ERROR
@@ -658,6 +706,44 @@ class Drone:
         logger.info("Exiting LAND mode via HOLD")
         await self._system.action.hold()
         await asyncio.sleep(0.5)
+
+    LIFTOFF_GRACE_S = 60.0
+    CLIMB_PROGRESS_M = 0.2
+
+    async def _wait_for_takeoff_altitude(
+        self, target_m: float, timeout_s: Optional[float] = None
+    ) -> None:
+        """Wait for the takeoff climb, judging failure by lack of progress.
+
+        PX4 can sit on the ground for tens of seconds after ``takeoff()`` — most
+        noticeably right after a mission upload leaves it in HOLD — so a single
+        fixed deadline reports a failure while the drone is still on its way up.
+        """
+        stall_budget = timeout_s or self._command_timeout_s
+        hard_deadline = time.monotonic() + (
+            timeout_s or (self.LIFTOFF_GRACE_S + 2.0 * target_m)
+        )
+        iterator = self._system.telemetry.position().__aiter__()
+        best_alt = -float("inf")
+        climbing = False
+        last_progress = time.monotonic()
+
+        while True:
+            now = time.monotonic()
+            budget = stall_budget if climbing else max(
+                stall_budget, self.LIFTOFF_GRACE_S
+            )
+            remaining = min(budget - (now - last_progress), hard_deadline - now)
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            item = await asyncio.wait_for(iterator.__anext__(), remaining)
+            altitude = item.relative_altitude_m
+            if altitude >= target_m - 0.3:
+                return
+            if altitude > best_alt + self.CLIMB_PROGRESS_M:
+                best_alt = altitude
+                climbing = altitude > 1.0
+                last_progress = now
 
     async def _wait_for_stream(
         self,

@@ -11,7 +11,12 @@ import os
 import platform
 import sys
 
-from src.backend.app import create_app
+# Spawning helper processes (GStreamer, mavsdk_server) forks a process that runs
+# gRPC threads; without fork support gRPC leaves stale FDs in its poller.
+os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
+os.environ.setdefault("GRPC_POLL_STRATEGY", "poll")
+
+from src.backend.app import create_app  # noqa: E402
 
 
 def default_port() -> int:
