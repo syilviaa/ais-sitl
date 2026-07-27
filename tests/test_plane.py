@@ -267,3 +267,11 @@ async def test_invalid_mission_is_rejected_before_mavsdk_upload(mission):
         await drone.fly_mission(mission)
     assert not drone._system.mission.upload_called
     await drone.disconnect()
+
+
+def test_connection_urls_use_python_mavsdk_format():
+    drone = Drone(host="127.0.0.1", port=14540, sitl_port=14580)
+    urls = drone.connection_urls()
+    assert urls[0] == "udp://127.0.0.1:14540"
+    assert "udp://:14540" in urls
+    assert "udpout://127.0.0.1:14580" in urls
