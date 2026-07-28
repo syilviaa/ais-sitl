@@ -1,337 +1,278 @@
-"""
-Unit tests for Drone/Plane flight control.
+"""Unit tests for the local PX4 SITL Drone controller."""
 
-Tests arm/disarm, takeoff/land, mission planning, and telemetry.
-
-Run: pytest tests/test_plane.py -v
-"""
+import asyncio
+from types import SimpleNamespace
 
 import pytest
-import asyncio
+
 from src.autopilot.plane import (
-    Drone, Plane, FlightMode,
-    Position, Velocity, Attitude,
-    ConnectionError, MissionValidationError, BatteryLowError
+    ConnectionError,
+    Drone,
+    DroneState,
+    DroneTimeoutError,
+    InvalidStateError,
+    MissionValidationError,
 )
 
 
-@pytest.fixture
-def drone():
-    """Create drone instance."""
-    return Drone(host="127.0.0.1", port=14540)
-
-
-@pytest.fixture
-def plane():
-    """Create plane instance."""
-    return Plane(host="127.0.0.1", port=14540)
-
-
-class TestDroneInitialization:
-    """Test drone initialization."""
-
-    def test_drone_init(self, drone):
-        """Test drone creation."""
-        assert drone.host == "127.0.0.1"
-        assert drone.port == 14540
-        assert not drone.is_connected()
-        assert not drone._armed
-
-    def test_plane_init(self, plane):
-        """Test plane is alias for drone."""
-        assert isinstance(plane, Drone)
-        assert plane.host == "127.0.0.1"
-
-    def test_custom_host_port(self):
-        """Test custom host and port."""
-        drone = Drone(host="192.168.1.1", port=12345)
-        assert drone.host == "192.168.1.1"
-        assert drone.port == 12345
-
-
-class TestFlightControl:
-    """Test arm/disarm/takeoff/land commands."""
-
-    @pytest.mark.asyncio
-    async def test_arm_not_connected(self, drone):
-        """Test arm fails when not connected."""
-        with pytest.raises(ConnectionError):
-            await drone.arm()
-
-    @pytest.mark.asyncio
-    async def test_disarm_when_not_armed(self, drone):
-        """Test disarm succeeds even if not armed."""
-        drone._connected = True
-        result = await drone.disarm()
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_arm_success(self, drone):
-        """Test successful arm."""
-        drone._connected = True
-        result = await drone.arm()
-        assert result is True
-        assert drone._armed is True
-
-    @pytest.mark.asyncio
-    async def test_arm_idempotent(self, drone):
-        """Test arming twice is safe."""
-        drone._connected = True
-        result1 = await drone.arm()
-        result2 = await drone.arm()
-        assert result1 is True
-        assert result2 is True
-
-    @pytest.mark.asyncio
-    async def test_disarm_success(self, drone):
-        """Test successful disarm."""
-        drone._connected = True
-        drone._armed = True
-        result = await drone.disarm()
-        assert result is True
-        assert drone._armed is False
-
-    @pytest.mark.asyncio
-    async def test_takeoff_not_connected(self, drone):
-        """Test takeoff fails when not connected."""
-        with pytest.raises(ConnectionError):
-            await drone.takeoff(50.0)
-
-    @pytest.mark.asyncio
-    async def test_takeoff_low_battery(self, drone):
-        """Test takeoff fails with low battery."""
-        drone._connected = True
-        drone._battery = 10.0  # Below 15% threshold
-        with pytest.raises(BatteryLowError):
-            await drone.takeoff(50.0)
-
-    @pytest.mark.asyncio
-    async def test_takeoff_arms_automatically(self, drone):
-        """Test takeoff arms drone automatically."""
-        drone._connected = True
-        drone._battery = 80.0
-        result = await drone.takeoff(50.0)
-        assert result is True
-        assert drone._armed is True
-
-    @pytest.mark.asyncio
-    async def test_land_success(self, drone):
-        """Test successful landing."""
-        drone._connected = True
-        drone._armed = True
-        result = await drone.land()
-        assert result is True
-        assert drone._armed is False
-
-    @pytest.mark.asyncio
-    async def test_hold_position_success(self, drone):
-        """Test hold position."""
-        drone._connected = True
-        result = await drone.hold_position()
-        assert result is True
-
-
-class TestMissionPlanning:
-    """Test mission planning and execution."""
-
-    @pytest.mark.asyncio
-    async def test_mission_requires_min_waypoints(self, drone):
-        """Test mission requires at least 2 waypoints."""
-        drone._connected = True
-        with pytest.raises(ValueError):
-            await drone.fly_mission([(47.39, 8.54, 50)])
-
-    @pytest.mark.asyncio
-    async def test_mission_validation_skipped_if_no_geofence(self, drone):
-        """Test mission proceeds if geofence config missing."""
-        drone._connected = True
-        waypoints = [
-            (47.39, 8.54, 50.0),
-            (47.40, 8.55, 50.0),
-        ]
-        # Should not raise - geofence file may not exist
-        result = await drone.fly_mission(waypoints)
-        # In stub mode, should succeed
-        if not drone._system:  # Stub mode (MAVSDK not available)
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_mission_arms_drone(self, drone):
-        """Test mission arms drone automatically."""
-        drone._connected = True
-        waypoints = [
-            (47.39, 8.54, 50.0),
-            (47.40, 8.55, 50.0),
-        ]
-        await drone.fly_mission(waypoints)
-        assert drone._armed is True
-
-    @pytest.mark.asyncio
-    async def test_mission_sets_active_flag(self, drone):
-        """Test mission sets active flag."""
-        drone._connected = True
-        waypoints = [
-            (47.39, 8.54, 50.0),
-            (47.40, 8.55, 50.0),
-        ]
-        await drone.fly_mission(waypoints)
-        # After stub mission completes, flag should be False
-        assert drone._mission_active is False
-
-
-class TestTelemetry:
-    """Test telemetry retrieval."""
-
-    def test_get_telemetry_default(self, drone):
-        """Test default telemetry values."""
-        telemetry = asyncio.run(drone.get_telemetry())
-
-        assert telemetry["lat"] == drone._position.lat
-        assert telemetry["lon"] == drone._position.lon
-        assert telemetry["alt"] == drone._position.alt
-        assert telemetry["battery"] == drone._battery
-        assert telemetry["armed"] == drone._armed
-
-    def test_telemetry_has_required_fields(self, drone):
-        """Test telemetry includes all required fields."""
-        telemetry = asyncio.run(drone.get_telemetry())
-
-        required_fields = [
-            "timestamp", "lat", "lon", "alt",
-            "vx", "vy", "vz",
-            "pitch", "roll", "yaw",
-            "battery", "rssi", "armed", "mode", "gps_status", "satellites"
-        ]
-
-        for field in required_fields:
-            assert field in telemetry, f"Missing field: {field}"
-
-    def test_position_dataclass(self):
-        """Test Position dataclass."""
-        pos = Position(47.39, 8.54, 50.0)
-        assert pos.lat == 47.39
-        assert pos.lon == 8.54
-        assert pos.alt == 50.0
-        assert pos.to_dict() == {"lat": 47.39, "lon": 8.54, "alt": 50.0}
-
-    def test_velocity_dataclass(self):
-        """Test Velocity dataclass."""
-        vel = Velocity(5.1, 0.3, -0.1)
-        assert vel.vx == 5.1
-        assert vel.vy == 0.3
-        assert vel.vz == -0.1
-
-    def test_attitude_dataclass(self):
-        """Test Attitude dataclass."""
-        att = Attitude(2.1, -0.5, 142.3)
-        assert att.pitch == 2.1
-        assert att.roll == -0.5
-        assert att.yaw == 142.3
-
-    @pytest.mark.asyncio
-    async def test_mission_progress_default(self, drone):
-        """Test mission progress default values."""
-        progress = await drone.get_mission_progress()
-
-        assert progress["current"] == 0
-        assert progress["total"] == 0
-        assert progress["distance_to_next"] == 0.0
-        assert progress["eta"] == 0
-
-
-class TestFlightMode:
-    """Test flight mode enum."""
-
-    def test_flight_mode_values(self):
-        """Test flight mode enum values."""
-        assert FlightMode.MANUAL.value == "MANUAL"
-        assert FlightMode.AUTO.value == "AUTO"
-        assert FlightMode.RTL.value == "RTL"
-        assert FlightMode.LAND.value == "LAND"
-
-
-class TestErrorHandling:
-    """Test error handling."""
-
-    def test_connection_error_message(self):
-        """Test ConnectionError message."""
-        with pytest.raises(ConnectionError, match="Not connected"):
-            raise ConnectionError("Not connected to autopilot")
-
-    def test_mission_validation_error(self):
-        """Test MissionValidationError."""
-        with pytest.raises(MissionValidationError, match="crosses"):
-            raise MissionValidationError("Mission crosses No-Fly Zone")
-
-    def test_battery_low_error(self):
-        """Test BatteryLowError."""
-        with pytest.raises(BatteryLowError, match="Battery"):
-            raise BatteryLowError("Battery too low: 10.0%")
-
-
-class TestTelemetryStreaming:
-    """Test telemetry subscription."""
-
-    @pytest.mark.asyncio
-    async def test_subscribe_not_connected(self, drone):
-        """Test subscribe fails if not connected."""
-        async def callback(data):
-            pass
-
-        with pytest.raises(ConnectionError):
-            await drone.subscribe_telemetry(callback)
-
-    @pytest.mark.asyncio
-    async def test_subscribe_sets_flag(self, drone):
-        """Test subscribe sets streaming flag."""
-        drone._connected = True
-
-        async def callback(data):
-            drone._telemetry_streaming = False  # Stop after 1 iteration
-
-        await drone.subscribe_telemetry(callback, rate_hz=100)
-        assert drone._telemetry_streaming is False
-
-    @pytest.mark.asyncio
-    async def test_unsubscribe_clears_flag(self, drone):
-        """Test unsubscribe clears streaming flag."""
-        drone._connected = True
-        drone._telemetry_streaming = True
-
-        await drone.unsubscribe_telemetry()
-
-        assert drone._telemetry_streaming is False
-        assert drone._telemetry_callback is None
-
-
-class TestIntegration:
-    """Integration tests with typical flight sequence."""
-
-    @pytest.mark.asyncio
-    async def test_complete_flight_sequence(self, drone):
-        """Test typical flight sequence: connect -> arm -> takeoff -> land -> disarm."""
-        drone._connected = True  # Simulate successful connection
-        drone._battery = 80.0
-
-        # Arm
-        assert await drone.arm() is True
-        assert drone._armed is True
-
-        # Takeoff
-        assert await drone.takeoff(50.0) is True
-
-        # Get telemetry
-        telemetry = await drone.get_telemetry()
-        assert "timestamp" in telemetry
-        assert telemetry["armed"] is True
-
-        # Land
-        assert await drone.land() is True
-
-        # Disarm
-        assert await drone.disarm() is True
-        assert drone._armed is False
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--tb=short"])
+async def value_stream(value):
+    """Yield a value once, then wait without consuming CPU."""
+    yield value
+    await asyncio.Event().wait()
+
+
+class FakeAction:
+    def __init__(self, system):
+        self.system = system
+        self.calls = []
+
+    async def arm(self):
+        self.calls.append("arm")
+        self.system.armed_value = True
+
+    async def disarm(self):
+        self.calls.append("disarm")
+        self.system.armed_value = False
+
+    async def set_takeoff_altitude(self, altitude):
+        self.calls.append(("set_takeoff_altitude", altitude))
+
+    async def takeoff(self):
+        self.calls.append("takeoff")
+        if self.system.reaches_altitude:
+            self.system.position_value.relative_altitude_m = 5.0
+
+    async def land(self):
+        self.calls.append("land")
+        self.system.armed_value = False
+
+    async def hold(self):
+        self.calls.append("hold")
+
+    async def return_to_launch(self):
+        self.calls.append("return_to_launch")
+
+
+class FakeTelemetry:
+    def __init__(self, system):
+        self.system = system
+
+    def health(self):
+        return value_stream(
+            SimpleNamespace(
+                is_global_position_ok=True,
+                is_home_position_ok=True,
+            )
+        )
+
+    def home(self):
+        return value_stream(SimpleNamespace(latitude_deg=47.4))
+
+    def armed(self):
+        return value_stream(self.system.armed_value)
+
+    def position(self):
+        return value_stream(self.system.position_value)
+
+    def velocity_ned(self):
+        return value_stream(
+            SimpleNamespace(north_m_s=3.0, east_m_s=4.0, down_m_s=-0.5)
+        )
+
+    def attitude_euler(self):
+        return value_stream(
+            SimpleNamespace(roll_deg=1.0, pitch_deg=2.0, yaw_deg=3.0)
+        )
+
+    def battery(self):
+        return value_stream(SimpleNamespace(remaining_percent=80.0))
+
+    def flight_mode(self):
+        return value_stream("HOLD")
+
+    def gps_info(self):
+        return value_stream(
+            SimpleNamespace(fix_type="FIX_3D", num_satellites=12)
+        )
+
+
+class FakeMission:
+    def __init__(self):
+        self.upload_called = False
+
+    async def upload_mission(self, plan):
+        self.upload_called = True
+        self.plan = plan
+
+    async def start_mission(self):
+        self.started = True
+
+    def mission_progress(self):
+        return value_stream(SimpleNamespace(current=1, total=2))
+
+
+class FakeSystem:
+    def __init__(self, reaches_altitude=True):
+        self.armed_value = False
+        self.reaches_altitude = reaches_altitude
+        self.position_value = SimpleNamespace(
+            latitude_deg=47.4,
+            longitude_deg=8.5,
+            absolute_altitude_m=500.0,
+            relative_altitude_m=0.0,
+        )
+        self.action = FakeAction(self)
+        self.telemetry = FakeTelemetry(self)
+        self.mission = FakeMission()
+        self.core = SimpleNamespace(
+            connection_state=lambda: value_stream(
+                SimpleNamespace(is_connected=True)
+            )
+        )
+
+    async def connect(self, system_address=None):
+        self.address = system_address
+
+
+async def ready_drone(system=None):
+    drone = Drone(system=system or FakeSystem(), command_timeout_s=0.05)
+    await drone.connect()
+    await drone.wait_until_ready()
+    return drone
+
+
+@pytest.mark.asyncio
+async def test_arm_is_rejected_before_connection_and_ready():
+    drone = Drone(system=FakeSystem())
+    with pytest.raises(ConnectionError):
+        await drone.arm()
+    await drone.connect()
+    with pytest.raises(InvalidStateError):
+        await drone.arm()
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_takeoff_auto_arms_from_ready():
+    drone = await ready_drone()
+    await drone.takeoff(5.0)
+    assert "arm" in drone._system.action.calls
+    assert drone.state is DroneState.AIRBORNE
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_invalid_takeoff_height_is_rejected():
+    drone = await ready_drone()
+    with pytest.raises(ValueError):
+        await drone.takeoff(0.1)
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_valid_state_transitions():
+    drone = await ready_drone()
+    await drone.arm()
+    assert drone.state is DroneState.ARMED
+    await drone.takeoff(5.0)
+    assert drone.state is DroneState.AIRBORNE
+    await drone.hold_position()
+    assert drone.state is DroneState.HOLDING
+    await drone.land()
+    assert drone.state is DroneState.READY
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_takeoff_times_out_if_altitude_is_not_reached():
+    drone = await ready_drone(FakeSystem(reaches_altitude=False))
+    await drone.arm()
+    with pytest.raises(DroneTimeoutError):
+        await drone.takeoff(5.0, timeout_s=0.01)
+    assert drone.state is DroneState.ERROR
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_land_and_rtl_send_mavsdk_commands():
+    drone = await ready_drone()
+    await drone.arm()
+    await drone.takeoff(5.0)
+    await drone.land()
+    assert "land" in drone._system.action.calls
+    await drone.arm()
+    await drone.takeoff(5.0)
+    await drone.return_to_launch("test")
+    assert "return_to_launch" in drone._system.action.calls
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_telemetry_format_uses_received_values():
+    drone = await ready_drone()
+    await asyncio.sleep(0)
+    telemetry = await drone.get_telemetry()
+    assert telemetry["lat"] == 47.4
+    assert telemetry["absolute_altitude_m"] == 500.0
+    assert telemetry["alt"] == 0.0
+    assert telemetry["vx"] == 3.0
+    assert telemetry["pitch"] == 2.0
+    assert telemetry["battery"] == 80.0
+    assert telemetry["armed"] is False
+    assert telemetry["mode"] == "HOLD"
+    assert telemetry["satellites"] == 12
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_telemetry_callback_is_limited_to_ten_hz():
+    drone = await ready_drone()
+    timestamps = []
+
+    async def callback(_telemetry):
+        timestamps.append(asyncio.get_running_loop().time())
+
+    await drone.subscribe_telemetry(callback)
+    await asyncio.sleep(0.31)
+    await drone.unsubscribe_telemetry()
+    assert len(timestamps) <= 4
+    assert all(
+        later - earlier >= 0.09
+        for earlier, later in zip(timestamps, timestamps[1:])
+    )
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_dangerous_mission_is_rejected_before_mavsdk_upload():
+    """The default validator loads the real project NFZ GeoJSON."""
+    drone = await ready_drone()
+    mission = [(51.1715, 71.4540, 50.0), (51.1720, 71.4550, 50.0)]
+    with pytest.raises(MissionValidationError):
+        await drone.fly_mission(mission)
+    assert not drone._system.mission.upload_called
+    await drone.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mission",
+    [
+        [None, (47.2, 8.0, 50.0)],
+        [(True, 8.5, 50.0), (47.2, 8.0, 50.0)],
+    ],
+)
+async def test_invalid_mission_is_rejected_before_mavsdk_upload(mission):
+    drone = await ready_drone()
+    with pytest.raises(MissionValidationError):
+        await drone.fly_mission(mission)
+    assert not drone._system.mission.upload_called
+    await drone.disconnect()
+
+
+def test_connection_urls_initiate_onboard_port_first():
+    drone = Drone(host="127.0.0.1", port=14540, sitl_port=14580)
+    urls = drone.connection_urls()
+    assert urls[0] == "udp://127.0.0.1:14580"
+    assert "udp://:14540" in urls
+    assert "udpin://0.0.0.0:14540" in urls

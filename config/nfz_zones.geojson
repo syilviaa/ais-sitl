@@ -1,33 +1,12 @@
 {
   "type": "FeatureCollection",
+  "description": "Astana Training Field — учебные NFZ для демонстрации (не реальные закрытые зоны)",
   "features": [
     {
       "type": "Feature",
       "properties": {
-        "name": "Airport Control Zone",
-        "description": "Zurich Airport no-fly zone",
-        "max_altitude": 150.0,
-        "min_altitude": 0.0,
-        "active": true
-      },
-      "geometry": {
-        "type": "Polygon",
-        "coordinates": [
-          [
-            [8.5455, 47.3977],
-            [8.5600, 47.3977],
-            [8.5600, 47.4100],
-            [8.5455, 47.4100],
-            [8.5455, 47.3977]
-          ]
-        ]
-      }
-    },
-    {
-      "type": "Feature",
-      "properties": {
-        "name": "Restricted Military Area",
-        "description": "Military base airspace restriction",
+        "name": "Учебная зона A (NFZ)",
+        "description": "Демонстрационная запретная зона для тренировки — полёты запрещены",
         "max_altitude": 200.0,
         "min_altitude": 0.0,
         "active": true
@@ -36,11 +15,11 @@
         "type": "Polygon",
         "coordinates": [
           [
-            [8.6000, 47.3500],
-            [8.6200, 47.3500],
-            [8.6200, 47.3700],
-            [8.6000, 47.3700],
-            [8.6000, 47.3500]
+            [71.4520, 51.1700],
+            [71.4560, 51.1700],
+            [71.4560, 51.1730],
+            [71.4520, 51.1730],
+            [71.4520, 51.1700]
           ]
         ]
       }
@@ -48,8 +27,8 @@
     {
       "type": "Feature",
       "properties": {
-        "name": "Safe Flight Corridor",
-        "description": "Designated safe zone for testing (inverted polygon)",
+        "name": "Training Safe Corridor",
+        "description": "Разрешённый учебный коридор полёта",
         "max_altitude": 500.0,
         "min_altitude": 0.0,
         "active": false,
@@ -59,11 +38,11 @@
         "type": "Polygon",
         "coordinates": [
           [
-            [8.5300, 47.3900],
-            [8.5700, 47.3900],
-            [8.5700, 47.4200],
-            [8.5300, 47.4200],
-            [8.5300, 47.3900]
+            [71.4440, 51.1670],
+            [71.4500, 51.1670],
+            [71.4500, 51.1700],
+            [71.4440, 51.1700],
+            [71.4440, 51.1670]
           ]
         ]
       }

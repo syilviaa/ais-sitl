@@ -2,9 +2,9 @@ name: PX4 SITL CI/CD Pipeline
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, feat/veha5-multidrone, feat/final-dashboard-integration, feat/dashboard-kz-ui ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, feat/veha5-multidrone, feat/final-dashboard-integration, feat/dashboard-kz-ui ]
 
 env:
   REGISTRY: ghcr.io
@@ -100,9 +100,40 @@ jobs:
         run: |
           pip install pylint flake8 black isort
 
-      - name: Check Python code style
+      - name: Check Python for errors (blocking)
         run: |
-          find . -name "*.py" -type f | grep -v __pycache__ | xargs flake8 --max-line-length=120 || true
+          pip install -r requirements.txt
+          flake8 src tests --count --select=E9,F63,F7,F82,F811,F821 --show-source --statistics
+
+      - name: Report Python style (non-blocking)
+        run: flake8 src tests --count --exit-zero --max-line-length=120 --statistics
+
+      - name: E2E sprint API script (if backend not required)
+        run: echo "E2E live script: scripts/e2e-sprint-demo.sh (run against running backend)"
+
+  backend-tests:
+    name: Backend Unit Tests (MVP)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run MVP compliance tests
+        run: |
+          python -m pytest tests/test_sprint_mvp.py tests/test_geofence.py tests/test_failsafe.py tests/test_mission.py tests/test_telemetry.py -q --tb=short
+
+      - name: Run API tests
+        run: |
+          python -m pytest tests/test_veha4_api.py tests/test_geofence_api.py -q --tb=short
 
   security-scan:
     name: Security Scanning
@@ -146,7 +177,7 @@ jobs:
     name: Notify Status
     runs-on: ubuntu-latest
     if: always()
-    needs: [build-docker, validate-sitl, code-quality, security-scan]
+    needs: [build-docker, validate-sitl, code-quality, backend-tests, security-scan]
 
     steps:
       - name: Check job status

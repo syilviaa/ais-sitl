@@ -10,22 +10,23 @@ sitl:
 
   # Initial position (latitude, longitude, altitude)
   start_position:
-    lat: 47.3977
-    lon: 8.5455
+    lat: 51.1694
+    lon: 71.4491
     alt: 0.0  # meters above ground
 
   # Flight parameters
   flight:
     takeoff_altitude: 50.0  # meters
     max_speed: 15.0  # m/s
-    battery_capacity: 5000  # mAh (simulated)
+    battery_capacity: 25000  # mAh (5× учебная ёмкость)
     battery_warning_threshold: 20  # % charge
     battery_critical_threshold: 5  # % charge
 
 mavlink:
   # MAVLink protocol settings
   protocol_version: 2  # MAVLink 2.0
-  default_port: 14540  # SITL simulator port
+  default_port: 14540  # Offboard/GCS listen port (MAVSDK)
+  sitl_port: 14580  # PX4 mavlink instance local port (remote → default_port)
   heartbeat_interval: 0.1  # seconds
   telemetry_rate: 10  # Hz
   max_latency_ms: 50  # Target RTT

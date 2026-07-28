@@ -1,564 +1,945 @@
-"""
-Drone/Plane autopilot control class with MAVSDK integration.
-
-High-level API for PX4 flight control via MAVSDK/pymavlink.
-Implements arm, disarm, takeoff, land, mission planning, and telemetry polling.
-
-Status: [VEHA 2] Implementation complete July 20, 2026
-"""
+"""PX4 SITL quadcopter control using MAVSDK."""
 
 import asyncio
+import inspect
 import logging
+import os
+import socket
+import subprocess
+import sys
+import tempfile
 import time
-from typing import List, Tuple, Dict, Callable, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from enum import Enum
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Tuple
 
-try:
-    from mavsdk import System
-    from mavsdk.mission import MissionItem
-    MAVSDK_AVAILABLE = True
-except ImportError:
-    MAVSDK_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("MAVSDK not available - running in stub mode")
+from src.mavsdk_import import (
+    IMPORT_ERROR,
+    MAVSDK_AVAILABLE,
+    MissionItem,
+    MissionPlan,
+    System,
+    resolve_mavsdk_server_path,
+)
+
+HAS_MAVSDK = MAVSDK_AVAILABLE
 
 
 logger = logging.getLogger(__name__)
 
 
-class FlightMode(Enum):
-    """PX4 flight modes."""
-    MANUAL = "MANUAL"
-    ALTCTL = "ALTCTL"
-    POSCTL = "POSCTL"
-    AUTO = "AUTO"
-    ACRO = "ACRO"
-    OFFBOARD = "OFFBOARD"
-    STABILIZED = "STABILIZED"
-    RATTITUDE = "RATTITUDE"
-    LAND = "LAND"
-    RTL = "RTL"
+class DroneState(Enum):
+    """Lifecycle states exposed by :class:`Drone`."""
+
+    DISCONNECTED = "disconnected"
+    CONNECTED = "connected"
+    READY = "ready"
+    ARMED = "armed"
+    AIRBORNE = "airborne"
+    HOLDING = "holding"
+    LANDING = "landing"
+    RTL = "rtl"
+    ERROR = "error"
 
 
 @dataclass
 class Position:
-    """Geographic position."""
-    lat: float
-    lon: float
-    alt: float  # altitude (meters AGL)
+    """Global position reported by MAVSDK, in metres and degrees."""
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    absolute_altitude_m: Optional[float] = None
+    relative_altitude_m: Optional[float] = None
 
 
 @dataclass
 class Velocity:
-    """3D velocity."""
-    vx: float  # forward (m/s)
-    vy: float  # right (m/s)
-    vz: float  # down (m/s)
+    """NED velocity in metres per second."""
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    vx: Optional[float] = None
+    vy: Optional[float] = None
+    vz: Optional[float] = None
 
 
 @dataclass
 class Attitude:
-    """Drone attitude (orientation)."""
-    pitch: float  # degrees
-    roll: float  # degrees
-    yaw: float  # degrees
+    """Euler attitude in degrees."""
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    roll: Optional[float] = None
+    pitch: Optional[float] = None
+    yaw: Optional[float] = None
+
+
+@dataclass
+class TelemetrySnapshot:
+    """Latest live telemetry, with ``None`` used for data not received yet."""
+
+    timestamp: Optional[float] = None
+    position: Position = None
+    velocity: Velocity = None
+    attitude: Attitude = None
+    battery_percent: Optional[float] = None
+    armed: Optional[bool] = None
+    flight_mode: Optional[str] = None
+    gps_status: Optional[str] = None
+    satellites: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.position is None:
+            self.position = Position()
+        if self.velocity is None:
+            self.velocity = Velocity()
+        if self.attitude is None:
+            self.attitude = Attitude()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return the backwards-compatible flat telemetry representation."""
+        result = asdict(self)
+        result.update(result.pop("position"))
+        result.update(result.pop("velocity"))
+        result.update(result.pop("attitude"))
+        result["alt"] = result["relative_altitude_m"]
+        result["battery"] = result.pop("battery_percent")
+        result["mode"] = result.pop("flight_mode")
+        return result
 
 
 class ConnectionError(Exception):
-    """Failed to connect to autopilot."""
-    pass
+    """Raised when the PX4 SITL connection cannot be used."""
+
+
+class DroneTimeoutError(Exception):
+    """Raised when PX4 does not report an expected state in time."""
+
+
+class InvalidStateError(Exception):
+    """Raised when a command is unsafe for the current drone state."""
 
 
 class MissionValidationError(Exception):
-    """Mission violates geofencing constraints."""
-    pass
+    """Raised when a mission is invalid or rejected by the geofence."""
 
 
 class BatteryLowError(Exception):
-    """Battery level critically low."""
-    pass
+    """Kept for compatibility with the documented public API."""
 
 
 class LinkLossError(Exception):
-    """MAVLink connection lost."""
-    pass
+    """Kept for compatibility with the documented public API."""
 
 
 class Drone:
-    """
-    High-level drone control interface with MAVSDK.
+    """Safety-focused MAVSDK control interface restricted to local PX4 SITL."""
 
-    Provides methods for arm/disarm, takeoff/land, mission planning, and telemetry polling.
+    MIN_TAKEOFF_ALTITUDE_M = 0.5
+    MAX_TAKEOFF_ALTITUDE_M = 120.0
+    TELEMETRY_HZ = 10.0
+    # PX4 multicopter defaults the speed limits are scaled from.
+    DEFAULT_CRUISE_M_S = 5.0
+    DEFAULT_TAKEOFF_SPEED_M_S = 1.5
+    DEFAULT_LAND_SPEED_M_S = 0.7
+    MAX_CRUISE_M_S = 20.0
 
-    Example:
-        drone = Drone(host="127.0.0.1", port=14540)
-        await drone.connect()
-        if drone.is_connected():
-            await drone.arm()
-            await drone.takeoff(50.0)
-            await drone.fly_mission(waypoints)
-    """
-
-    def __init__(self, host: str = "127.0.0.1", port: int = 14540):
-        """
-        Initialize drone connection.
-
-        Args:
-            host: MAVLink autopilot hostname/IP (default: localhost for SITL)
-            port: MAVLink UDP port (default: 14540 for PX4 SITL)
-        """
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 14540,
+        sitl_port: int = 14580,
+        system: Optional[Any] = None,
+        geofence_validator: Optional[Any] = None,
+        command_timeout_s: float = 30.0,
+    ) -> None:
+        if host not in {"127.0.0.1", "localhost", "::1"}:
+            raise ConnectionError(
+                "Only local PX4 SITL endpoints are permitted"
+            )
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("port must be a valid UDP port")
+        if not isinstance(sitl_port, int) or not 1 <= sitl_port <= 65535:
+            raise ValueError("sitl_port must be a valid UDP port")
         self.host = host
         self.port = port
+        self.sitl_port = sitl_port
+        self._injected_system = system is not None
+        self._system = system
+        self._mavsdk_proc: Optional[subprocess.Popen] = None
+        self._mavsdk_log_path: Optional[str] = None
+        self._mavsdk_log_handle: Optional[Any] = None
+        self._grpc_port = 50051
+        self._geofence_validator = geofence_validator
+        self._command_timeout_s = command_timeout_s
         self._connected = False
-        self._armed = False
-        self._telemetry_callback: Optional[Callable] = None
-        self._telemetry_streaming = False
-        self._mission_active = False
+        self._state = DroneState.DISCONNECTED
+        self._lock: Optional[asyncio.Lock] = None
+        self._lock_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._telemetry = TelemetrySnapshot()
+        self._telemetry_callback: Optional[
+            Callable[[Dict[str, Any]], Any]
+        ] = None
+        self._telemetry_tasks: List[asyncio.Task] = []
+        self._callback_task: Optional[asyncio.Task] = None
+        self._mission_task: Optional[asyncio.Task] = None
+        self._mission_progress = {"current": 0, "total": 0}
 
-        # MAVSDK system
-        self._system = System(mavsdk_server_address=host, port=port) if MAVSDK_AVAILABLE else None
+    def _get_lock(self) -> asyncio.Lock:
+        """Bind lock to the current running event loop."""
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
 
-        # Telemetry state cache
-        self._position = Position(0.0, 0.0, 0.0)
-        self._velocity = Velocity(0.0, 0.0, 0.0)
-        self._attitude = Attitude(0.0, 0.0, 0.0)
-        self._battery = 100.0
-        self._flight_mode = FlightMode.MANUAL
-        self._satellites = 0
-        self._last_telemetry_time = time.time()
-
-        logger.info(f"Drone initialized: {host}:{port}")
-
-    async def connect(self) -> bool:
-        """
-        Connect to autopilot.
-
-        Returns:
-            True if successful, False otherwise
-        """
-        if not MAVSDK_AVAILABLE:
-            logger.warning("MAVSDK not available - using stub mode")
-            self._connected = True
-            return True
-
-        try:
-            logger.info(f"Connecting to autopilot at {self.host}:{self.port}...")
-            await self._system.connect(system_address=f"udp://{self.host}:{self.port}")
-
-            # Wait for heartbeat
-            async for state in self._system.core.connection_state():
-                if state.is_connected:
-                    logger.info("✅ Connected to autopilot")
-                    self._connected = True
-                    break
-
-            return self._connected
-
-        except Exception as e:
-            logger.error(f"Connection failed: {e}")
-            return False
+    @property
+    def state(self) -> DroneState:
+        """Return the current controller state."""
+        return self._state
 
     def is_connected(self) -> bool:
-        """Check if connected to autopilot."""
+        """Return whether a local SITL connection has been established."""
         return self._connected
 
-    # Flight Control
+    def _bind_host(self) -> str:
+        if self.host in {"127.0.0.1", "localhost", "::1"}:
+            return "127.0.0.1"
+        return self.host
 
-    async def arm(self) -> bool:
+    def connection_urls(self, prefer_listen: bool = False) -> List[str]:
+        """MAVSDK connection URLs to try (initiate to PX4 onboard port first).
+
+        PX4 onboard mavlink binds UDP ``sitl_port`` (14580) and sends TO
+        ``port`` (14540). Passive listen on 14540 alone often never completes
+        MAVSDK discovery — we must send heartbeats to 14580 first
+        (``udp://127.0.0.1:14580`` client mode per MAVSDK docs).
+
+        When a UDP probe already sees MAVLink on ``port`` (typical with
+        ``px4io/px4-sitl`` on Docker Desktop), listen mode succeeds first.
         """
-        Arm (enable) drone motors.
+        host = self._bind_host()
+        listen = f"udp://:{self.port}"
+        initiate = f"udp://{host}:{self.sitl_port}"
+        listen_in = f"udpin://0.0.0.0:{self.port}"
+        if prefer_listen:
+            return [listen, initiate, listen_in]
+        return [initiate, listen, listen_in]
 
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self._connected:
-            raise ConnectionError("Not connected to autopilot")
-
-        if self._armed:
-            logger.debug("Already armed")
-            return True
-
+    @staticmethod
+    def _probe_udp_port(port: int, seconds: float = 2.0) -> tuple[int, set[tuple[str, int]]]:
+        """Count MAVLink datagrams reaching a local UDP port."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sources: set[tuple[str, int]] = set()
+        count = 0
         try:
-            logger.info("Arming motors...")
-            if MAVSDK_AVAILABLE:
-                await self._system.action.arm()
-            self._armed = True
-            logger.info("✅ Motors armed")
-            return True
-        except Exception as e:
-            logger.error(f"Arm failed: {e}")
-            return False
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("0.0.0.0", port))
+            sock.settimeout(0.25)
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    _, addr = sock.recvfrom(4096)
+                except socket.timeout:
+                    continue
+                count += 1
+                sources.add(addr)
+        except OSError as error:
+            logger.warning(
+                "UDP probe could not bind port %s (%s) — port may be in use",
+                port,
+                error,
+            )
+            return -1, sources
+        finally:
+            sock.close()
+        return count, sources
 
-    async def disarm(self) -> bool:
-        """
-        Disarm (disable) drone motors.
+    def _stop_mavsdk_server(self) -> None:
+        if self._mavsdk_proc is not None:
+            self._mavsdk_proc.kill()
+            self._mavsdk_proc.wait(timeout=2)
+            self._mavsdk_proc = None
+        if self._mavsdk_log_handle is not None:
+            self._mavsdk_log_handle.close()
+            self._mavsdk_log_handle = None
 
-        Returns:
-            True if successful, False otherwise
-        """
-        if not self._armed:
-            logger.debug("Already disarmed")
-            return True
-
+    def _read_mavsdk_server_log(self) -> str:
+        if not self._mavsdk_log_path or not os.path.isfile(self._mavsdk_log_path):
+            return ""
         try:
-            logger.info("Disarming motors...")
-            if MAVSDK_AVAILABLE:
-                await self._system.action.disarm()
-            self._armed = False
-            logger.info("✅ Motors disarmed")
-            return True
-        except Exception as e:
-            logger.error(f"Disarm failed: {e}")
-            return False
+            with open(self._mavsdk_log_path, encoding="utf-8", errors="replace") as handle:
+                return handle.read()[-4000:]
+        except OSError:
+            return ""
 
-    async def takeoff(self, altitude: float) -> bool:
-        """
-        Automatic takeoff to specified altitude.
+    def _start_mavsdk_server(self, urls: List[str], grpc_port: int) -> None:
+        """Launch mavsdk_server with stderr captured for diagnostics."""
+        backend = resolve_mavsdk_server_path()
+        if backend is None:
+            raise ConnectionError(
+                "mavsdk_server binary not found. Run ./scripts/setup-dev.sh "
+                "or set MAVSDK_SERVER_PATH."
+            )
 
-        Args:
-            altitude: Target altitude in meters (AGL)
+        self._stop_mavsdk_server()
+        log_fd, self._mavsdk_log_path = tempfile.mkstemp(
+            prefix="mavsdk_server_", suffix=".log"
+        )
+        os.close(log_fd)
+        self._mavsdk_log_handle = open(
+            self._mavsdk_log_path, "w", encoding="utf-8"
+        )
 
-        Returns:
-            True if successful, False if aborted
+        args = [os.fspath(backend), "-p", str(grpc_port), *urls]
+        logger.info("Starting mavsdk_server: %s", " ".join(args[1:]))
+        self._mavsdk_proc = subprocess.Popen(
+            args,
+            stdout=self._mavsdk_log_handle,
+            stderr=subprocess.STDOUT,
+        )
 
-        Raises:
-            ConnectionError: If not connected
-            BatteryLowError: If battery too low
-        """
-        if not self._connected:
-            raise ConnectionError("Not connected to autopilot")
+    async def _try_connect(self, address: str, timeout_s: float, grpc_port: int) -> None:
+        """Connect one MAVSDK endpoint and wait for PX4 heartbeat."""
+        if self._injected_system:
+            if self._system is None:
+                raise ConnectionError("Injected MAVSDK system is missing")
+            await self._system.connect(system_address=address)
+        else:
+            self._start_mavsdk_server([address], grpc_port)
+            await asyncio.sleep(0.75)
+            self._system = System(
+                mavsdk_server_address="localhost",
+                port=grpc_port,
+            )
+            await self._system.connect(system_address=None)
 
-        if self._battery < 15:
-            raise BatteryLowError(f"Battery too low: {self._battery}%")
+        await self._wait_for_stream(
+            self._system.core.connection_state,
+            lambda item: item.is_connected,
+            timeout_s,
+        )
 
-        try:
-            logger.info(f"Taking off to {altitude}m...")
-
-            if not self._armed:
-                await self.arm()
-
-            if MAVSDK_AVAILABLE:
-                await self._system.action.set_takeoff_altitude(altitude)
-                await self._system.action.takeoff()
-
-                # Wait for takeoff to complete
-                async for flight_mode in self._system.telemetry.flight_mode():
-                    if flight_mode == FlightMode.LAND:
-                        break
-
-            logger.info("✅ Takeoff complete")
-            return True
-
-        except Exception as e:
-            logger.error(f"Takeoff failed: {e}")
-            return False
-
-    async def land(self) -> bool:
-        """
-        Automatic landing at current location.
-
-        Returns:
-            True if successful, False if aborted
-        """
-        try:
-            logger.info("Landing...")
-
-            if MAVSDK_AVAILABLE:
-                await self._system.action.land()
-
-            self._armed = False
-            logger.info("✅ Landing complete")
-            return True
-
-        except Exception as e:
-            logger.error(f"Land failed: {e}")
-            return False
-
-    async def hold_position(self) -> bool:
-        """
-        Hold position (hover in place).
-
-        Returns:
-            True if successful
-        """
-        try:
-            logger.warning("Holding position")
-
-            if MAVSDK_AVAILABLE:
-                await self._system.action.hold()
-
-            return True
-
-        except Exception as e:
-            logger.error(f"Hold position failed: {e}")
-            return False
-
-    # Mission Planning
-
-    async def fly_mission(self, waypoints: List[Tuple[float, float, float]]) -> bool:
-        """
-        Autonomous mission execution following waypoints.
-
-        Args:
-            waypoints: List of (lat, lon, altitude_m) tuples
-
-        Returns:
-            True if mission completed, False if aborted
-
-        Raises:
-            MissionValidationError: If mission crosses NFZ
-            ConnectionError: If link lost during mission
-        """
-        if len(waypoints) < 2:
-            raise ValueError("Mission requires at least 2 waypoints")
-
-        try:
-            logger.info(f"Planning mission with {len(waypoints)} waypoints...")
-
-            # Validate mission (geofence check)
-            if not await self.validate_mission(waypoints):
-                raise MissionValidationError("Mission crosses No-Fly Zone")
-
-            if not MAVSDK_AVAILABLE:
-                self._mission_active = True
-                await asyncio.sleep(1)
-                self._mission_active = False
-                logger.info("Mission execution completed (stub mode)")
+    async def connect(self, timeout_s: float = 15.0) -> bool:
+        """Connect to local PX4 SITL — initiate on sitl_port, then listen on port."""
+        async with self._get_lock():
+            if self._connected:
                 return True
 
-            # Create mission items
-            mission_items = []
-            for i, (lat, lon, alt) in enumerate(waypoints):
-                item = MissionItem(
-                    latitude_deg=lat,
-                    longitude_deg=lon,
-                    relative_altitude_m=alt,
-                    speed_m_s=5.0,
-                    is_fly_through=True,
-                    gimbal_pitch_degree=0,
-                    gimbal_yaw_degree=0,
-                    camera_action=MissionItem.CameraAction.NONE,
-                    loiter_time_s=0,
-                    camera_photo_interval_s=0,
+            if not self._injected_system:
+                packet_count, sources = self._probe_udp_port(self.port, seconds=2.0)
+                logger.info(
+                    "MAVLink UDP probe on port %s: %s datagram(s) from %s",
+                    self.port,
+                    packet_count,
+                    sorted(sources) if sources else "none",
                 )
-                mission_items.append(item)
+            else:
+                packet_count, sources = 0, set()
 
-            # Upload mission
-            logger.info("Uploading mission...")
-            mission_plan = self._system.mission.import_qgroundcontrol_mission(mission_items)
-            await self._system.mission.upload_mission(mission_plan)
+            urls = self.connection_urls(prefer_listen=packet_count > 0)
+            last_error: Optional[Exception] = None
+            attempt_timeout = min(12.0, timeout_s)
 
-            # Arm and start mission
-            if not self._armed:
-                await self.arm()
+            for index, address in enumerate(urls):
+                grpc_port = self._grpc_port + index
+                try:
+                    logger.info("MAVSDK connect attempt %s: %s", index + 1, address)
+                    await self._try_connect(address, attempt_timeout, grpc_port)
+                    self._connected = True
+                    self._state = DroneState.CONNECTED
+                    self._start_telemetry_collection()
+                    await self._relax_datalink_failsafe()
+                    logger.info("Connected to PX4 SITL via %s", address)
+                    return True
+                except (asyncio.TimeoutError, Exception) as error:
+                    last_error = error
+                    server_log = self._read_mavsdk_server_log()
+                    if server_log:
+                        logger.warning(
+                            "mavsdk_server log (attempt %s):\n%s",
+                            index + 1,
+                            server_log,
+                        )
+                    logger.warning(
+                        "MAVSDK connect failed for %s: %s", address, error
+                    )
+                    if not self._injected_system:
+                        self._stop_mavsdk_server()
+                        self._system = None
 
-            self._mission_active = True
-            logger.info("Starting mission execution...")
-            await self._system.mission.start_mission()
+            self._state = DroneState.ERROR
+            probe_hint = (
+                f"UDP probe saw {packet_count} datagram(s) on port {self.port}. "
+                if packet_count
+                else (
+                    f"No UDP datagrams reached port {self.port} — if SITL runs in Docker, "
+                    "use --network host or map UDP 14540 to the host. "
+                )
+            )
+            if isinstance(last_error, asyncio.TimeoutError):
+                raise DroneTimeoutError(
+                    "Timed out waiting for PX4 MAVSDK discovery. "
+                    f"{probe_hint}"
+                    f"Tried: {', '.join(urls)}. "
+                    "Restart PX4 SITL after backend connect failures (PX4 caches UDP peer)."
+                ) from last_error
+            if isinstance(last_error, (SystemExit, KeyboardInterrupt)):
+                raise ConnectionError(
+                    "MAVSDK server unavailable on this platform"
+                ) from last_error
+            message = str(last_error).strip() if last_error else "unknown error"
+            raise ConnectionError(
+                f"Could not connect to local PX4 SITL: {message}"
+            ) from last_error
 
-            # Monitor mission progress
-            async for mission_progress in self._system.mission.mission_progress():
-                logger.debug(f"Mission progress: {mission_progress.current}/{mission_progress.total}")
+    @staticmethod
+    def _describe_health(health: Optional[Any]) -> str:
+        """List the PX4 health flags that are still not OK."""
+        if health is None:
+            return "no health report received"
+        flags = {
+            "global_position": "is_global_position_ok",
+            "local_position": "is_local_position_ok",
+            "armable": "is_armable",
+            "gyrometer_calibration": "is_gyrometer_calibration_ok",
+            "accelerometer_calibration": "is_accelerometer_calibration_ok",
+            "magnetometer_calibration": "is_magnetometer_calibration_ok",
+        }
+        missing = [
+            name
+            for name, attr in flags.items()
+            if not getattr(health, attr, True)
+        ]
+        return "not OK: " + ", ".join(missing) if missing else "home not published"
 
-            self._mission_active = False
-            logger.info("✅ Mission execution completed")
+    def link_alive(self) -> bool:
+        """False when the mavsdk_server child has exited (it aborts on heartbeat loss)."""
+        if self._injected_system or self._mavsdk_proc is None:
+            return True
+        return self._mavsdk_proc.poll() is None
+
+    async def ensure_link(
+        self, timeout_s: float = 20.0, force: bool = False
+    ) -> bool:
+        """Re-establish the MAVSDK link if mavsdk_server died or streams broke.
+
+        ``force`` also restarts a still-running server, which is needed when the
+        gRPC streams were torn down by a heartbeat timeout under heavy CPU load.
+        """
+        if not self._connected:
+            return False
+        if not force and self.link_alive():
+            return True
+        tail = self._read_mavsdk_server_log().strip().splitlines()
+        logger.warning(
+            "mavsdk_server exited (%s) — reconnecting",
+            tail[-1] if tail else "no log output",
+        )
+        await self.disconnect()
+        return await self.connect(timeout_s=timeout_s)
+
+    async def disconnect(self) -> None:
+        """Stop local subscriptions and mark the controller disconnected."""
+        async with self._get_lock():
+            await self.unsubscribe_telemetry()
+            self._cancel_task(self._mission_task)
+            self._mission_task = None
+            self._connected = False
+            self._state = DroneState.DISCONNECTED
+            if not self._injected_system:
+                self._stop_mavsdk_server()
+                self._system = None
+
+    async def wait_until_ready(self, timeout_s: float = 30.0) -> bool:
+        """Wait until PX4 reports both a valid global GPS and home position."""
+        self._require_connected()
+        last_health: Optional[Any] = None
+
+        def ready(health: Any) -> bool:
+            nonlocal last_health
+            last_health = health
+            # PX4 SITL leaves is_home_position_ok False even while publishing a
+            # valid home, so readiness is global position + armable, and the
+            # home stream below confirms home for real.
+            return health.is_global_position_ok and getattr(
+                health, "is_armable", True
+            )
+
+        try:
+            await self._wait_for_stream(
+                self._system.telemetry.health, ready, timeout_s
+            )
+            await self._wait_for_stream(
+                self._system.telemetry.home,
+                lambda home: home is not None
+                and getattr(home, "latitude_deg", None) is not None,
+                timeout_s,
+            )
+        except asyncio.TimeoutError as error:
+            raise DroneTimeoutError(
+                "GPS or home position did not become ready "
+                f"({self._describe_health(last_health)})"
+            ) from error
+        self._state = DroneState.READY
+        return True
+
+    async def arm(self, timeout_s: Optional[float] = None) -> bool:
+        """Arm motors and wait until telemetry confirms the armed state."""
+        async with self._get_lock():
+            self._require_state(DroneState.READY)
+            await self._system.action.arm()
+            await self._wait_for_stream(
+                self._system.telemetry.armed,
+                lambda armed: armed,
+                timeout_s or self._command_timeout_s,
+            )
+            self._state = DroneState.ARMED
             return True
 
-        except Exception as e:
-            logger.error(f"Mission failed: {e}")
-            self._mission_active = False
-            return False
+    async def disarm(self, timeout_s: Optional[float] = None) -> bool:
+        """Disarm motors and wait for telemetry confirmation."""
+        async with self._get_lock():
+            self._require_connected()
+            await self._system.action.disarm()
+            await self._wait_for_stream(
+                self._system.telemetry.armed,
+                lambda armed: not armed,
+                timeout_s or self._command_timeout_s,
+            )
+            self._state = DroneState.READY
+            return True
 
-    async def validate_mission(self, waypoints: List[Tuple[float, float, float]]) -> bool:
-        """
-        Validate mission against geofencing constraints.
+    async def takeoff(
+        self, altitude_m: float, timeout_s: Optional[float] = None
+    ) -> bool:
+        """Take off to a valid relative altitude (auto-arm from READY)."""
+        if not isinstance(altitude_m, (float, int)) or isinstance(
+            altitude_m, bool
+        ):
+            raise ValueError("altitude_m must be a number")
+        if not (
+            self.MIN_TAKEOFF_ALTITUDE_M
+            <= altitude_m
+            <= self.MAX_TAKEOFF_ALTITUDE_M
+        ):
+            raise ValueError("altitude_m must be between 0.5 and 120 metres")
+        async with self._get_lock():
+            self._require_connected()
+            await self._exit_land_mode_if_needed()
+            if not self._telemetry.armed:
+                await self._system.action.arm()
+                await self._wait_for_stream(
+                    self._system.telemetry.armed,
+                    lambda armed: armed,
+                    timeout_s or self._command_timeout_s,
+                )
+            self._state = DroneState.ARMED
+            await self._system.action.set_takeoff_altitude(float(altitude_m))
+            await self._system.action.takeoff()
+            try:
+                await self._wait_for_takeoff_altitude(altitude_m, timeout_s)
+            except asyncio.TimeoutError as error:
+                self._state = DroneState.ERROR
+                raise DroneTimeoutError(
+                    "Target takeoff altitude was not reached"
+                ) from error
+            self._state = DroneState.AIRBORNE
+            return True
 
-        Args:
-            waypoints: Mission waypoints
+    async def land(self, timeout_s: Optional[float] = None) -> bool:
+        """Land and wait for PX4 telemetry to report motors disarmed."""
+        async with self._get_lock():
+            self._require_connected()
+            self._state = DroneState.LANDING
+            current_alt = self._telemetry.position.relative_altitude_m or 0.0
+            await self._system.action.land()
+            # Descent runs at MPC_LAND_SPEED (0.7 m/s) plus the disarm delay.
+            descent_timeout = timeout_s or max(
+                self._command_timeout_s, 40.0 + current_alt / 0.7
+            )
+            try:
+                await self._wait_for_stream(
+                    self._system.telemetry.armed,
+                    lambda armed: not armed,
+                    descent_timeout,
+                )
+            except asyncio.TimeoutError as error:
+                self._state = DroneState.ERROR
+                raise DroneTimeoutError(
+                    "PX4 did not disarm after landing"
+                ) from error
+            self._state = DroneState.READY
+            return True
 
-        Returns:
-            True if mission valid, False if violates NFZ
+    DATALINK_LOSS_TIMEOUT_S = 60
+
+    async def _relax_datalink_failsafe(self) -> None:
+        """Widen PX4's GCS-link timeout so a stalling simulation won't RTL.
+
+        Gazebo on a laptop dips well below real time; MAVSDK then declares the
+        system lost, stops sending heartbeats, and PX4's 10 s data-link failsafe
+        aborts the flight. The failsafe stays armed, just with more slack.
         """
         try:
+            await self._system.param.set_param_int(
+                "COM_DL_LOSS_T", self.DATALINK_LOSS_TIMEOUT_S
+            )
+        except Exception as exc:
+            logger.debug("COM_DL_LOSS_T not set: %s", exc)
+
+    async def set_flight_speed(self, cruise_m_s: float) -> Dict[str, float]:
+        """Scale PX4 speed limits around the requested cruise speed.
+
+        Mission items carry their own DO_CHANGE_SPEED, but PX4 still clamps them
+        to MPC_XY_VEL_MAX, so the ceiling has to move with the cruise speed.
+        """
+        self._require_connected()
+        if not isinstance(cruise_m_s, (int, float)) or isinstance(
+            cruise_m_s, bool
+        ):
+            raise ValueError("cruise_m_s must be a number")
+        if not 1.0 <= cruise_m_s <= self.MAX_CRUISE_M_S:
+            raise ValueError(
+                f"cruise_m_s must be between 1 and {self.MAX_CRUISE_M_S}"
+            )
+
+        ratio = cruise_m_s / self.DEFAULT_CRUISE_M_S
+        params = {
+            "MPC_XY_CRUISE": cruise_m_s,
+            "MPC_XY_VEL_MAX": min(cruise_m_s + 3.0, self.MAX_CRUISE_M_S + 3.0),
+            "MPC_TKO_SPEED": min(self.DEFAULT_TAKEOFF_SPEED_M_S * ratio, 5.0),
+            "MPC_LAND_SPEED": min(self.DEFAULT_LAND_SPEED_M_S * ratio, 2.0),
+        }
+        applied: Dict[str, float] = {}
+        for name, value in params.items():
+            await self._system.param.set_param_float(name, float(value))
+            applied[name] = round(float(value), 2)
+        logger.info("Flight speed set to %.1f m/s: %s", cruise_m_s, applied)
+        return applied
+
+    async def hold_position(self) -> bool:
+        """Command PX4 to hold its current position."""
+        async with self._get_lock():
+            self._require_connected()
+            await self._exit_land_mode_if_needed()
+            await self._system.action.hold()
+            if self._state in (
+                DroneState.AIRBORNE,
+                DroneState.HOLDING,
+                DroneState.RTL,
+            ):
+                self._state = DroneState.HOLDING
+            elif self._telemetry.armed and (
+                self._telemetry.position.relative_altitude_m or 0
+            ) > 0.5:
+                self._state = DroneState.HOLDING
+            else:
+                self._state = DroneState.READY
+            return True
+
+    async def return_to_launch(self, reason: str = "operator request") -> bool:
+        """Request PX4 return-to-launch; failsafe policy remains external."""
+        async with self._get_lock():
+            self._require_connected()
+            airborne = self._state in (
+                DroneState.AIRBORNE,
+                DroneState.HOLDING,
+                DroneState.RTL,
+            )
+            if not airborne:
+                alt = self._telemetry.position.relative_altitude_m or 0.0
+                airborne = bool(self._telemetry.armed and alt > 0.5)
+            if not airborne:
+                await self._exit_land_mode_if_needed()
+                self._state = DroneState.READY
+                logger.info("RTL skipped — already on ground")
+                return True
+            logger.warning("Return to launch requested: %s", reason)
+            await self._system.action.return_to_launch()
+            self._state = DroneState.RTL
+            return True
+
+    async def validate_mission(
+        self, waypoints: List[Tuple[float, float, float]]
+    ) -> bool:
+        """Validate points through the external geofence dependency."""
+        self._validate_waypoints(waypoints)
+        validator = self._geofence_validator
+        if validator is None:
             from .geofence import GeofenceValidator
 
             validator = GeofenceValidator()
-            if not validator.load_nfz_zones("config/nfz_zones.geojson"):
-                logger.warning("Could not load NFZ zones - skipping validation")
-                return True
+            if not validator.load_nfz_zones():
+                raise MissionValidationError(
+                    "NFZ data could not be loaded; mission rejected"
+                )
+        elif getattr(validator, "loaded", True) is False:
+            raise MissionValidationError(
+                "NFZ data is unavailable; mission rejected"
+            )
+        result = validator.validate_mission(waypoints)
+        if inspect.isawaitable(result):
+            result = await result
+        if not result:
+            raise MissionValidationError(
+                "Mission violates the configured geofence"
+            )
+        return True
 
-            is_valid = validator.validate_mission(waypoints)
-            if not is_valid:
-                logger.error("Mission crosses No-Fly Zone")
-            return is_valid
+    async def fly_mission(
+        self, waypoints: List[Tuple[float, float, float]]
+    ) -> bool:
+        """Validate, upload, and start a MAVSDK mission, exposing progress."""
+        self._require_connected()
+        await self.validate_mission(waypoints)
+        items = [
+            MissionItem(
+                latitude_deg=lat,
+                longitude_deg=lon,
+                relative_altitude_m=altitude,
+                speed_m_s=5.0,
+                is_fly_through=True,
+                gimbal_pitch_deg=float("nan"),
+                gimbal_yaw_deg=float("nan"),
+                camera_action=MissionItem.CameraAction.NONE,
+                loiter_time_s=float("nan"),
+                camera_photo_interval_s=float("nan"),
+                acceptance_radius_m=5.0,
+                yaw_deg=float("nan"),
+                camera_photo_distance_m=float("nan"),
+                vehicle_action=MissionItem.VehicleAction.NONE,
+            )
+            for lat, lon, altitude in waypoints
+        ]
+        await self._system.mission.upload_mission(MissionPlan(items))
+        self._mission_progress = {"current": 0, "total": len(items)}
+        await self._system.mission.start_mission()
+        self._cancel_task(self._mission_task)
+        self._mission_task = asyncio.create_task(
+            self._collect_mission_progress()
+        )
+        return True
 
-        except Exception as e:
-            logger.warning(f"Geofence validation error: {e} - proceeding anyway")
-            return True
+    async def get_telemetry(self) -> Dict[str, Any]:
+        """Return a flat snapshot derived from received MAVSDK telemetry."""
+        return self._telemetry.to_dict()
 
-    # Telemetry
-
-    async def get_telemetry(self) -> Dict:
-        """
-        Get current drone status (snapshot).
-
-        Returns:
-            Dictionary with position, velocity, attitude, battery, etc.
-        """
-        return {
-            "timestamp": time.time(),
-            "lat": self._position.lat,
-            "lon": self._position.lon,
-            "alt": self._position.alt,
-            "vx": self._velocity.vx,
-            "vy": self._velocity.vy,
-            "vz": self._velocity.vz,
-            "pitch": self._attitude.pitch,
-            "roll": self._attitude.roll,
-            "yaw": self._attitude.yaw,
-            "battery": self._battery,
-            "rssi": -50,
-            "armed": self._armed,
-            "mode": self._flight_mode.value,
-            "gps_status": "3D" if self._satellites >= 3 else "2D",
-            "satellites": self._satellites,
-        }
-
-    async def subscribe_telemetry(self, callback: Callable[[Dict], None], rate_hz: float = 10.0):
-        """
-        Subscribe to telemetry stream (default 10 Hz).
-
-        Args:
-            callback: Async function called with telemetry data
-            rate_hz: Update rate in Hz (default: 10)
-        """
-        if not self._connected:
-            raise ConnectionError("Not connected to autopilot")
-
-        logger.info(f"Subscribing to telemetry at {rate_hz} Hz...")
+    async def subscribe_telemetry(
+        self, callback: Callable[[Dict[str, Any]], Any]
+    ) -> None:
+        """Subscribe to live telemetry; callbacks are rate-limited to 10 Hz."""
         self._telemetry_callback = callback
-        self._telemetry_streaming = True
+        self._start_telemetry_collection()
+        if self._callback_task is None or self._callback_task.done():
+            self._callback_task = asyncio.create_task(
+                self._publish_telemetry()
+            )
 
-        try:
-            if not MAVSDK_AVAILABLE:
-                # Stub mode: generate fake telemetry
-                while self._telemetry_streaming:
-                    telemetry = await self.get_telemetry()
-                    if asyncio.iscoroutinefunction(callback):
-                        await callback(telemetry)
-                    else:
-                        callback(telemetry)
-                    await asyncio.sleep(1.0 / rate_hz)
-                return
-
-            # Real MAVSDK telemetry streaming
-            update_interval = 1.0 / rate_hz
-
-            async def telemetry_loop():
-                pos_task = asyncio.create_task(self._stream_position())
-                vel_task = asyncio.create_task(self._stream_velocity())
-                att_task = asyncio.create_task(self._stream_attitude())
-                bat_task = asyncio.create_task(self._stream_battery())
-
-                while self._telemetry_streaming:
-                    telemetry = await self.get_telemetry()
-                    if asyncio.iscoroutinefunction(callback):
-                        await callback(telemetry)
-                    else:
-                        callback(telemetry)
-                    await asyncio.sleep(update_interval)
-
-                pos_task.cancel()
-                vel_task.cancel()
-                att_task.cancel()
-                bat_task.cancel()
-
-            await telemetry_loop()
-
-        except Exception as e:
-            logger.error(f"Telemetry subscription error: {e}")
-        finally:
-            self._telemetry_streaming = False
-
-    async def _stream_position(self):
-        """Stream GPS position."""
-        if not MAVSDK_AVAILABLE:
-            return
-        try:
-            async for position in self._system.telemetry.position():
-                self._position = Position(position.latitude_deg, position.longitude_deg, position.absolute_altitude_m)
-        except Exception as e:
-            logger.error(f"Position stream error: {e}")
-
-    async def _stream_velocity(self):
-        """Stream velocity."""
-        if not MAVSDK_AVAILABLE:
-            return
-        try:
-            async for velocity in self._system.telemetry.velocity_ned():
-                self._velocity = Velocity(velocity.north_m_s, velocity.east_m_s, velocity.down_m_s)
-        except Exception as e:
-            logger.error(f"Velocity stream error: {e}")
-
-    async def _stream_attitude(self):
-        """Stream attitude."""
-        if not MAVSDK_AVAILABLE:
-            return
-        try:
-            async for attitude in self._system.telemetry.attitude_euler_deg():
-                self._attitude = Attitude(attitude.pitch_deg, attitude.roll_deg, attitude.yaw_deg)
-        except Exception as e:
-            logger.error(f"Attitude stream error: {e}")
-
-    async def _stream_battery(self):
-        """Stream battery status."""
-        if not MAVSDK_AVAILABLE:
-            return
-        try:
-            async for battery in self._system.telemetry.battery():
-                self._battery = battery.remaining_percent * 100
-        except Exception as e:
-            logger.error(f"Battery stream error: {e}")
-
-    async def unsubscribe_telemetry(self):
-        """Stop telemetry stream."""
-        logger.info("Unsubscribing from telemetry...")
-        self._telemetry_streaming = False
+    async def unsubscribe_telemetry(self) -> None:
+        """Stop telemetry collection and callback delivery."""
         self._telemetry_callback = None
+        self._cancel_task(self._callback_task)
+        self._callback_task = None
+        for task in self._telemetry_tasks:
+            self._cancel_task(task)
+        self._telemetry_tasks = []
 
-    async def get_mission_progress(self) -> Dict:
+    async def get_mission_progress(self) -> Dict[str, int]:
+        """Return the latest mission item progress reported by MAVSDK."""
+        return dict(self._mission_progress)
+
+    def _require_connected(self) -> None:
+        if not self._connected:
+            raise ConnectionError("Not connected to local PX4 SITL")
+
+    def _require_state(self, *states: DroneState) -> None:
+        self._require_connected()
+        if self._state not in states:
+            names = ", ".join(state.name for state in states)
+            message = "Expected state {}, got {}".format(
+                names, self._state.name
+            )
+            raise InvalidStateError(message)
+
+    async def _exit_land_mode_if_needed(self) -> None:
+        """Leave PX4 LAND mode so arm/takeoff commands are accepted."""
+        mode = (self._telemetry.flight_mode or "").upper()
+        if "LAND" not in mode:
+            return
+        logger.info("Exiting LAND mode via HOLD")
+        await self._system.action.hold()
+        await asyncio.sleep(0.5)
+
+    LIFTOFF_GRACE_S = 60.0
+    CLIMB_PROGRESS_M = 0.2
+
+    async def _wait_for_takeoff_altitude(
+        self, target_m: float, timeout_s: Optional[float] = None
+    ) -> None:
+        """Wait for the takeoff climb, judging failure by lack of progress.
+
+        PX4 can sit on the ground for tens of seconds after ``takeoff()`` — most
+        noticeably right after a mission upload leaves it in HOLD — so a single
+        fixed deadline reports a failure while the drone is still on its way up.
         """
-        Get current mission execution progress.
+        stall_budget = timeout_s or self._command_timeout_s
+        hard_deadline = time.monotonic() + (
+            timeout_s or (self.LIFTOFF_GRACE_S + 2.0 * target_m)
+        )
+        iterator = self._system.telemetry.position().__aiter__()
+        best_alt = -float("inf")
+        climbing = False
+        last_progress = time.monotonic()
 
-        Returns:
-            Dictionary with current waypoint, total, distance, ETA
-        """
-        if not MAVSDK_AVAILABLE:
-            return {"current": 0, "total": 0, "distance_to_next": 0.0, "eta": 0}
+        while True:
+            now = time.monotonic()
+            budget = stall_budget if climbing else max(
+                stall_budget, self.LIFTOFF_GRACE_S
+            )
+            remaining = min(budget - (now - last_progress), hard_deadline - now)
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            item = await asyncio.wait_for(iterator.__anext__(), remaining)
+            altitude = item.relative_altitude_m
+            if altitude >= target_m - 0.3:
+                return
+            if altitude > best_alt + self.CLIMB_PROGRESS_M:
+                best_alt = altitude
+                climbing = altitude > 1.0
+                last_progress = now
 
-        try:
-            async for progress in self._system.mission.mission_progress():
-                return {
-                    "current": progress.current,
-                    "total": progress.total,
-                    "distance_to_next": 0.0,
-                    "eta": 0,
-                }
-        except Exception as e:
-            logger.error(f"Mission progress error: {e}")
-            return {"current": 0, "total": 0, "distance_to_next": 0.0, "eta": 0}
+    async def _wait_for_stream(
+        self,
+        stream_factory: Callable[[], AsyncIterator[Any]],
+        predicate: Callable[[Any], bool],
+        timeout_s: float,
+    ) -> Any:
+        iterator = stream_factory().__aiter__()
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            item = await asyncio.wait_for(iterator.__anext__(), remaining)
+            if predicate(item):
+                return item
+
+    def _start_telemetry_collection(self) -> None:
+        if self._telemetry_tasks or not self._connected:
+            return
+        self._telemetry_tasks = [
+            asyncio.create_task(self._consume_position()),
+            asyncio.create_task(self._consume_velocity()),
+            asyncio.create_task(self._consume_attitude()),
+            asyncio.create_task(self._consume_battery()),
+            asyncio.create_task(self._consume_armed()),
+            asyncio.create_task(self._consume_mode()),
+            asyncio.create_task(self._consume_gps()),
+        ]
+
+    async def _consume_position(self) -> None:
+        async for item in self._system.telemetry.position():
+            self._telemetry.position = Position(
+                item.latitude_deg,
+                item.longitude_deg,
+                item.absolute_altitude_m,
+                item.relative_altitude_m,
+            )
+            self._telemetry.timestamp = time.time()
+
+    async def _consume_velocity(self) -> None:
+        async for item in self._system.telemetry.velocity_ned():
+            self._telemetry.velocity = Velocity(
+                item.north_m_s,
+                item.east_m_s,
+                item.down_m_s,
+            )
+            self._telemetry.timestamp = time.time()
+
+    async def _consume_attitude(self) -> None:
+        async for item in self._system.telemetry.attitude_euler():
+            self._telemetry.attitude = Attitude(
+                item.roll_deg,
+                item.pitch_deg,
+                item.yaw_deg,
+            )
+            self._telemetry.timestamp = time.time()
+
+    async def _consume_battery(self) -> None:
+        async for item in self._system.telemetry.battery():
+            self._telemetry.battery_percent = item.remaining_percent
+            self._telemetry.timestamp = time.time()
+
+    async def _consume_armed(self) -> None:
+        async for item in self._system.telemetry.armed():
+            self._telemetry.armed = item
+            self._telemetry.timestamp = time.time()
+
+    async def _consume_mode(self) -> None:
+        async for item in self._system.telemetry.flight_mode():
+            self._telemetry.flight_mode = str(item)
+            self._telemetry.timestamp = time.time()
+
+    async def _consume_gps(self) -> None:
+        async for item in self._system.telemetry.gps_info():
+            self._telemetry.gps_status = str(item.fix_type)
+            self._telemetry.satellites = item.num_satellites
+            self._telemetry.timestamp = time.time()
+
+    async def _publish_telemetry(self) -> None:
+        while self._telemetry_callback is not None:
+            callback = self._telemetry_callback
+            result = callback(await self.get_telemetry())
+            if inspect.isawaitable(result):
+                await result
+            await asyncio.sleep(1.0 / self.TELEMETRY_HZ)
+
+    async def _collect_mission_progress(self) -> None:
+        async for progress in self._system.mission.mission_progress():
+            self._mission_progress = {
+                "current": progress.current,
+                "total": progress.total,
+            }
+
+    @staticmethod
+    def _cancel_task(task: Optional[asyncio.Task]) -> None:
+        if task is not None and not task.done():
+            task.cancel()
+
+    @staticmethod
+    def _validate_waypoints(
+        waypoints: List[Tuple[float, float, float]]
+    ) -> None:
+        if not isinstance(waypoints, (list, tuple)):
+            raise MissionValidationError(
+                "Mission waypoints must be a list or tuple"
+            )
+        if len(waypoints) < 2:
+            raise MissionValidationError(
+                "Mission requires at least two waypoints"
+            )
+        for waypoint in waypoints:
+            if not isinstance(waypoint, (list, tuple)):
+                raise MissionValidationError(
+                    "Each waypoint must be a list or tuple"
+                )
+            if len(waypoint) != 3:
+                raise MissionValidationError(
+                    "Each waypoint must be (lat, lon, altitude)"
+                )
+            lat, lon, altitude = waypoint
+            if any(
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                for value in waypoint
+            ):
+                raise MissionValidationError(
+                    "Waypoint coordinates must be numeric values"
+                )
+            if not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
+                raise MissionValidationError(
+                    "Waypoint latitude or longitude is invalid"
+                )
+            if altitude < 0:
+                raise MissionValidationError("Waypoint altitude is invalid")
 
 
 class Plane(Drone):
-    """Alias for Drone class (fixed-wing aircraft variant)."""
-    pass
+    """Compatibility alias for :class:`Drone`."""

@@ -1,0 +1,51 @@
+{
+  "type": "FeatureCollection",
+  "description": "Astana Training Field — учебные NFZ для демонстрации (не реальные закрытые зоны)",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Training Restricted Area A",
+        "description": "Учебная запретная зона — тренировочный полигон AIS",
+        "max_altitude": 200.0,
+        "min_altitude": 0.0,
+        "active": true
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [71.4520, 51.1700],
+            [71.4560, 51.1700],
+            [71.4560, 51.1730],
+            [71.4520, 51.1730],
+            [71.4520, 51.1700]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Training Safe Corridor",
+        "description": "Разрешённый учебный коридор полёта",
+        "max_altitude": 500.0,
+        "min_altitude": 0.0,
+        "active": false,
+        "type": "safe_zone"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [71.4440, 51.1670],
+            [71.4500, 51.1670],
+            [71.4500, 51.1700],
+            [71.4440, 51.1700],
+            [71.4440, 51.1670]
+          ]
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,548 @@
+"""
+Mission Management System
+
+Loads and executes missions in PX4 SITL:
+- Upload waypoints to autopilot
+- Monitor mission progress
+- Handle mission events
+- Convert Waypoint → MAVSDK MissionItem
+
+Timeline: Veha 2-3 (July 22-23, 2026)
+Owner: Мерей
+"""
+
+import asyncio
+import logging
+from typing import List, Optional, Callable
+
+from src.models import Waypoint, MissionItem, MissionProgress
+
+from src.mavsdk_import import (
+    IMPORT_ERROR,
+    MAVSDK_AVAILABLE,
+    MissionItem as MavMissionItem,
+    MissionPlan,
+    System,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class MissionService:
+    """
+    Mission management and execution.
+
+    Workflow:
+    1. Create mission from waypoints
+    2. Validate mission
+    3. Upload to autopilot
+    4. Start mission
+    5. Monitor progress
+    6. Handle completion
+
+    Usage:
+        service = MissionService(system)
+        waypoints = [
+            Waypoint(47.39, 8.54, 50),
+            Waypoint(47.40, 8.55, 50),
+        ]
+        await service.upload_mission(waypoints)
+        await service.start_mission()
+
+        while True:
+            progress = await service.get_progress()
+            print(f"Waypoint {progress.current_waypoint}/{progress.total_waypoints}")
+            if progress.is_mission_finished:
+                break
+            await asyncio.sleep(1.0)
+    """
+
+    def __init__(self, system: Optional["System"] = None):
+        """
+        Initialize mission service.
+
+        Args:
+            system: MAVSDK System instance (None for stub mode)
+        """
+        self._system = system
+        self._mission_uploaded = False
+        self._mission_running = False
+        self._current_mission_items: List[MissionItem] = []
+        self._on_progress_callbacks: List[Callable] = []
+        self._last_upload_error: Optional[str] = None
+        self._progress: Optional[MissionProgress] = None
+        self._progress_task: Optional[asyncio.Task] = None
+
+        logger.info("MissionService initialized")
+
+    # ========================================================================
+    # Mission Upload
+    # ========================================================================
+
+    async def upload_mission(self, waypoints: List[Waypoint]) -> bool:
+        """
+        Upload mission to autopilot.
+
+        Args:
+            waypoints: List of Waypoint objects
+
+        Returns:
+            True if successful
+
+        Raises:
+            ValueError: If waypoints list is empty
+        """
+        if not waypoints:
+            raise ValueError("Mission must have at least 1 waypoint")
+
+        logger.info(f"Uploading mission with {len(waypoints)} waypoints")
+
+        # Convert waypoints to MissionItems
+        mission_items = [MissionItem.from_waypoint(wp) for wp in waypoints]
+        self._current_mission_items = mission_items
+        self.stop_progress_watcher()
+        self._progress = None
+
+        # Upload to autopilot
+        if not MAVSDK_AVAILABLE or not self._system:
+            logger.info("✅ Mission uploaded (stub mode)")
+            self._mission_uploaded = True
+            return True
+
+        try:
+            logger.debug(f"Uploading {len(waypoints)} items to autopilot")
+            self._last_upload_error = None
+
+            # PX4 rejects mission updates while moving — hold briefly first.
+            try:
+                await self._system.action.hold()
+                await asyncio.sleep(0.4)
+            except Exception as hold_exc:
+                logger.debug("Hold before mission upload: %s", hold_exc)
+
+            try:
+                await self._system.mission.clear_mission()
+            except Exception as clear_exc:
+                logger.debug("clear_mission: %s", clear_exc)
+
+            # The first item is a TAKEOFF, and PX4 climbs to MIS_TAKEOFF_ALT
+            # (50 m by default) for it rather than to the waypoint altitude.
+            try:
+                await self._system.param.set_param_float(
+                    "MIS_TAKEOFF_ALT", float(waypoints[0].altitude_m)
+                )
+            except Exception as param_exc:
+                logger.debug("MIS_TAKEOFF_ALT: %s", param_exc)
+
+            fastest = max(wp.speed_m_s for wp in waypoints)
+            try:
+                await self._system.param.set_param_float(
+                    "MPC_XY_VEL_MAX", float(max(fastest + 3.0, 12.0))
+                )
+            except Exception as param_exc:
+                logger.debug("MPC_XY_VEL_MAX: %s", param_exc)
+
+            # A mission that opens with a takeoff item is rejected outright
+            # while the vehicle is flying: "Switching to Mission is currently
+            # not available". Only lead with a takeoff from the ground.
+            airborne = await self._is_airborne()
+
+            mav_items = []
+            for index, wp in enumerate(waypoints):
+                vehicle_action = (
+                    MavMissionItem.VehicleAction.TAKEOFF
+                    if index == 0 and not airborne
+                    else MavMissionItem.VehicleAction.NONE
+                )
+                mav_items.append(
+                    MavMissionItem(
+                        latitude_deg=wp.lat,
+                        longitude_deg=wp.lon,
+                        relative_altitude_m=wp.altitude_m,
+                        speed_m_s=wp.speed_m_s,
+                        is_fly_through=True,
+                        gimbal_pitch_deg=float("nan"),
+                        gimbal_yaw_deg=float("nan"),
+                        camera_action=MavMissionItem.CameraAction.NONE,
+                        loiter_time_s=float("nan"),
+                        camera_photo_interval_s=float("nan"),
+                        acceptance_radius_m=wp.acceptance_radius_m,
+                        yaw_deg=float("nan"),
+                        camera_photo_distance_m=float("nan"),
+                        vehicle_action=vehicle_action,
+                    )
+                )
+            await self._system.mission.upload_mission(MissionPlan(mav_items))
+
+            logger.info("✅ Mission uploaded successfully")
+            self._mission_uploaded = True
+            return True
+
+        except Exception as e:
+            self._last_upload_error = str(e)
+            logger.error(f"❌ Mission upload failed: {e}")
+            self._mission_uploaded = False
+            return False
+
+    # ========================================================================
+    # Mission Execution
+    # ========================================================================
+
+    async def start_mission(self) -> bool:
+        """
+        Start mission execution.
+
+        Returns:
+            True if successful
+
+        Raises:
+            RuntimeError: If no mission uploaded
+        """
+        if not self._mission_uploaded:
+            raise RuntimeError("No mission uploaded. Call upload_mission() first.")
+
+        logger.info("Starting mission execution")
+
+        if not MAVSDK_AVAILABLE or not self._system:
+            logger.info("✅ Mission started (stub mode)")
+            self._mission_running = True
+            return True
+
+        try:
+            # PX4 will not enter mission mode on its own from a disarmed state.
+            if not await self._is_armed():
+                logger.info("Arming for mission start")
+                await self._system.action.arm()
+            await self._system.mission.start_mission()
+            logger.info("✅ Mission started")
+            self._mission_running = True
+            self._start_progress_watcher()
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Mission start failed: {e}")
+            return False
+
+    async def pause_mission(self) -> bool:
+        """Pause mission execution."""
+        if not self._mission_running:
+            logger.warning("No mission running to pause")
+            return False
+
+        logger.info("Pausing mission")
+
+        if not MAVSDK_AVAILABLE or not self._system:
+            self._mission_running = False
+            return True
+
+        try:
+            # PX4 doesn't have native pause, use hold instead
+            await self._system.action.hold()
+            logger.info("✅ Mission paused")
+            self._mission_running = False
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Pause failed: {e}")
+            return False
+
+    async def resume_mission(self) -> bool:
+        """Resume paused mission."""
+        logger.info("Resuming mission")
+
+        if not MAVSDK_AVAILABLE or not self._system:
+            self._mission_running = True
+            return True
+
+        try:
+            await self._system.mission.start_mission()
+            logger.info("✅ Mission resumed")
+            self._mission_running = True
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Resume failed: {e}")
+            return False
+
+    async def abort_mission(self) -> bool:
+        """Abort mission and return to launch."""
+        logger.warning("Aborting mission - RTL")
+        self._mission_running = False
+        self.stop_progress_watcher()
+
+        if not MAVSDK_AVAILABLE or not self._system:
+            return True
+
+        try:
+            await self._system.action.return_to_launch()
+            logger.info("✅ Mission aborted - RTL initiated")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Abort failed: {e}")
+            return False
+
+    # ========================================================================
+    # Mission Progress
+    # ========================================================================
+
+    async def _read_stream_once(self, stream_factory, timeout: float = 3.0):
+        """Read a single value from a MAVSDK stream and release the subscription."""
+        stream = stream_factory()
+        try:
+            return await asyncio.wait_for(stream.__anext__(), timeout)
+        except Exception:
+            return None
+        finally:
+            await stream.aclose()
+
+    async def _is_airborne(self) -> bool:
+        in_air = await self._read_stream_once(self._system.telemetry.in_air)
+        return bool(in_air)
+
+    async def _is_armed(self) -> bool:
+        armed = await self._read_stream_once(self._system.telemetry.armed)
+        return bool(armed)
+
+    def _start_progress_watcher(self) -> None:
+        """Keep one long-lived mission_progress subscription and cache it.
+
+        PX4 only publishes progress when the current item changes, so reading
+        the stream per request blocks forever once the mission is done.
+        """
+        if self._progress_task and not self._progress_task.done():
+            return
+        self._progress_task = asyncio.ensure_future(self._watch_progress())
+
+    async def _watch_progress(self) -> None:
+        stream = self._system.mission.mission_progress()
+        try:
+            async for progress in stream:
+                mission_progress = MissionProgress(
+                    current_waypoint=progress.current,
+                    total_waypoints=progress.total,
+                    is_mission_finished=progress.current >= progress.total,
+                )
+                self._progress = mission_progress
+                await self._notify_callbacks(mission_progress)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Mission progress stream ended: %s", e)
+        finally:
+            await stream.aclose()
+
+    def stop_progress_watcher(self) -> None:
+        """Release the mission_progress subscription."""
+        if self._progress_task and not self._progress_task.done():
+            self._progress_task.cancel()
+        self._progress_task = None
+
+    async def get_progress(self) -> Optional[MissionProgress]:
+        """
+        Get current mission progress.
+
+        Returns:
+            MissionProgress object or None if not available
+        """
+        if not MAVSDK_AVAILABLE or not self._system:
+            mission_progress = MissionProgress(
+                current_waypoint=0,
+                total_waypoints=len(self._current_mission_items),
+                is_mission_finished=False,
+            )
+            await self._notify_callbacks(mission_progress)
+            return mission_progress
+
+        if self._mission_running:
+            self._start_progress_watcher()
+        if self._progress is not None:
+            return self._progress
+        return MissionProgress(
+            current_waypoint=0,
+            total_waypoints=len(self._current_mission_items),
+            is_mission_finished=False,
+        )
+
+    async def is_mission_finished(self) -> bool:
+        """Check if mission is complete."""
+        progress = await self.get_progress()
+        if progress:
+            return progress.is_mission_finished
+        return False
+
+    # ========================================================================
+    # Callbacks
+    # ========================================================================
+
+    def on_progress(self, callback: Callable[[MissionProgress], None]):
+        """Register callback for mission progress updates."""
+        self._on_progress_callbacks.append(callback)
+
+    async def _notify_callbacks(self, progress: MissionProgress):
+        """Notify all registered callbacks."""
+        for callback in self._on_progress_callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(progress)
+                else:
+                    callback(progress)
+            except Exception as e:
+                logger.error(f"Progress callback error: {e}")
+
+    # ========================================================================
+    # Mission Info
+    # ========================================================================
+
+    def get_current_mission(self) -> List[MissionItem]:
+        """Get currently loaded mission items."""
+        return self._current_mission_items
+
+    def get_mission_stats(self) -> dict:
+        """Get mission statistics."""
+        total_items = len(self._current_mission_items)
+
+        # Calculate total distance (rough estimate)
+        total_distance_m = 0.0
+        if total_items >= 2:
+            for i in range(total_items - 1):
+                item1 = self._current_mission_items[i]
+                item2 = self._current_mission_items[i + 1]
+
+                # Simple distance calc (lat/lon difference in meters)
+                # Real implementation would use proper geodetic distance
+                lat_diff = (item2.latitude_deg - item1.latitude_deg) * 111000
+                lon_diff = (item2.longitude_deg - item1.longitude_deg) * 111000
+                distance = (lat_diff**2 + lon_diff**2) ** 0.5
+                total_distance_m += distance
+
+        return {
+            "total_waypoints": total_items,
+            "estimated_distance_m": total_distance_m,
+            "uploaded": self._mission_uploaded,
+            "running": self._mission_running,
+        }
+
+    # ========================================================================
+    # Validation
+    # ========================================================================
+
+    @staticmethod
+    def validate_mission(waypoints: List[Waypoint]) -> tuple[bool, str]:
+        """
+        Validate mission before upload.
+
+        Args:
+            waypoints: Mission waypoints to validate
+
+        Returns:
+            (is_valid, error_message)
+        """
+        if not waypoints:
+            return False, "Mission must have at least 1 waypoint"
+
+        if len(waypoints) > 500:
+            return False, "Mission has too many waypoints (max 500)"
+
+        # Check each waypoint
+        for i, wp in enumerate(waypoints):
+            # Check GPS bounds
+            if not (-90 <= wp.lat <= 90):
+                return False, f"Waypoint {i}: invalid latitude {wp.lat}"
+
+            if not (-180 <= wp.lon <= 180):
+                return False, f"Waypoint {i}: invalid longitude {wp.lon}"
+
+            # Check altitude
+            if wp.altitude_m < 0:
+                return False, f"Waypoint {i}: negative altitude"
+
+            if wp.altitude_m > 10000:
+                return False, f"Waypoint {i}: altitude too high (max 10000m)"
+
+            # Check speed
+            if wp.speed_m_s < 1 or wp.speed_m_s > 30:
+                return False, f"Waypoint {i}: invalid speed {wp.speed_m_s}"
+
+        return True, "Mission valid"
+
+
+class MissionPlanner:
+    """
+    High-level mission planning utility.
+
+    Helper for creating missions from scratch.
+    """
+
+    @staticmethod
+    def create_simple_mission(
+        home_lat: float,
+        home_lon: float,
+        home_alt: float,
+        altitude: float,
+        distance_m: float,
+        num_waypoints: int = 4,
+    ) -> List[Waypoint]:
+        """
+        Create simple rectangular mission.
+
+        Args:
+            home_lat, home_lon, home_alt: Home position
+            altitude: Mission altitude
+            distance_m: Distance from home to each corner
+            num_waypoints: Number of waypoints in rectangle
+
+        Returns:
+            List of Waypoint objects
+        """
+        waypoints = []
+
+        # Convert distance to lat/lon degrees (rough)
+        lat_offset = distance_m / 111000
+        lon_offset = distance_m / 111000
+
+        # Rectangle corners
+        corners = [
+            (home_lat + lat_offset, home_lon + lon_offset),
+            (home_lat + lat_offset, home_lon - lon_offset),
+            (home_lat - lat_offset, home_lon - lon_offset),
+            (home_lat - lat_offset, home_lon + lon_offset),
+        ]
+
+        # Add waypoints
+        for lat, lon in corners:
+            waypoints.append(Waypoint(lat=lat, lon=lon, altitude_m=altitude))
+
+        # Return home
+        waypoints.append(
+            Waypoint(lat=home_lat, lon=home_lon, altitude_m=home_alt)
+        )
+
+        return waypoints
+
+    @staticmethod
+    def create_loiter_mission(
+        lat: float,
+        lon: float,
+        altitude: float,
+        loiter_time_sec: float = 60.0,
+    ) -> List[Waypoint]:
+        """
+        Create loiter (hover) mission at single point.
+
+        Args:
+            lat, lon: Position
+            altitude: Altitude
+            loiter_time_sec: How long to hover
+
+        Returns:
+            List with single loiter waypoint
+        """
+        return [
+            Waypoint(
+                lat=lat,
+                lon=lon,
+                altitude_m=altitude,
+                wait_time_s=loiter_time_sec,
+            )
+        ]

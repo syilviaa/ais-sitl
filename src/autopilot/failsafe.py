@@ -87,8 +87,8 @@ class FailsafeMonitor:
 
     async def _telemetry_callback(self, telemetry: dict):
         """Called on each telemetry update."""
-        # Update last heartbeat time
-        self._last_heartbeat_time = telemetry.get("timestamp", 0.0)
+        import time as _time
+        self._last_heartbeat_time = _time.time()
 
     async def _check_failsafe_conditions(self):
         """Check for failsafe trigger conditions."""
@@ -107,10 +107,12 @@ class FailsafeMonitor:
                 await self._trigger_rtl("BATTERY_LOW")
                 return
 
-            # Check link health (would use actual timestamp in production)
-            # if time.time() - self._last_heartbeat_time > self.rc_loss_timeout:
-            #     logger.warning("Link loss detected - Triggering RTL")
-            #     await self._trigger_rtl("LINK_LOSS")
+            # Check link health
+            import time as _time
+            if _time.time() - self._last_heartbeat_time > self.rc_loss_timeout:
+                logger.warning("Link loss detected - Triggering RTL")
+                await self._trigger_rtl("LINK_LOSS")
+                return
 
         except Exception as e:
             logger.error(f"Failsafe check error: {e}")
@@ -126,11 +128,10 @@ class FailsafeMonitor:
 
             # Then return to launch
             logger.info("Initiating Return to Launch...")
-            # TODO: Send RTL command via MAVLink
-            # await self._send_rtl_command()
+            await self.drone.return_to_launch(reason=reason)
 
             # Monitor RTL progress and land
-            await asyncio.sleep(10.0)  # Simulate RTL time
+            await asyncio.sleep(5.0)
             await self.drone.land()
 
             logger.info("RTL sequence complete")
