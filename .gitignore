@@ -70,3 +70,6 @@ cache/
 *.bag
 *.bagindex
 node_modules/
+
+# Local CV virtual environment
+.venv-cv/
