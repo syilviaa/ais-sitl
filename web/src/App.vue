@@ -136,14 +136,25 @@
           </div>
         </section>
 
-        <!-- Video stub -->
+        <!-- Computer vision -->
         <section class="panel video-panel">
-          <h2>📹 Video stream</h2>
-          <div class="video-stub">
-            <div class="video-placeholder">
-              <p>No active stream</p>
-              <small>SITL stub</small>
-            </div>
+          <h2>📹 Computer Vision</h2>
+          <VisionOverlay
+            :video-src="vision.videoSrc"
+            :detections="vision.detections"
+            :frame-width="vision.frameWidth"
+            :frame-height="vision.frameHeight"
+            :stream-status="vision.streamStatus"
+          />
+          <div class="vision-panel-shell">
+            <VisionPanel
+              :camera-status="vision.cameraStatus"
+              :model-status="vision.modelStatus"
+              :stream-status="vision.streamStatus"
+              :model-name="vision.modelName"
+              :fps="vision.fps"
+              :latency-ms="vision.latencyMs"
+            />
           </div>
         </section>
 
@@ -170,6 +181,8 @@
 
 <script>
 import MapComponent from './components/MapComponent.vue'
+import VisionOverlay from './components/VisionOverlay.vue'
+import VisionPanel from './components/VisionPanel.vue'
 import { DEFAULT_WAYPOINTS } from './config/trainingZone.js'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
 import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
@@ -182,7 +195,7 @@ const API_BASE = import.meta.env.VITE_API_URL
 
 export default {
   name: 'App',
-  components: { MapComponent },
+  components: { MapComponent, VisionOverlay, VisionPanel },
   data() {
     return {
       apiConnected: false,
@@ -213,6 +226,18 @@ export default {
       failsafe: { running: false, battery_warning: false, battery_critical: false },
       rtlReason: null,
       events: [],
+      vision: {
+        videoSrc: import.meta.env.VITE_VISION_STREAM_URL || '',
+        detections: [],
+        frameWidth: 1920,
+        frameHeight: 1080,
+        cameraStatus: 'disconnected',
+        modelStatus: 'missing',
+        streamStatus: 'stopped',
+        modelName: '',
+        fps: null,
+        latencyMs: null,
+      },
       unsubTelemetry: null,
       unsubWsStatus: null,
       restFallbackInterval: null,
@@ -747,16 +772,7 @@ export default {
 .safety-item .warning { color: #d97706; }
 .safety-item .critical { color: #dc2626; }
 
-.video-placeholder {
-  background: #0f172a;
-  height: 100px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #64748b;
-  border-radius: 6px;
-}
+.vision-panel-shell { margin-top: 0.75rem; }
 
 .video-placeholder p { color: #94a3b8; font-weight: 600; font-size: 0.9rem; }
 .video-placeholder small { font-size: 0.72rem; margin-top: 4px; }

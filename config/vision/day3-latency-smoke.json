@@ -1,0 +1,14 @@
+{
+  "source": "/private/tmp/ais-cv-models/demo1080p.mp4",
+  "model": "/private/tmp/ais-cv-models/yolov8n.pt",
+  "device": "cpu",
+  "frame_width": 1920,
+  "frame_height": 1080,
+  "confidence_threshold": 0.65,
+  "event_counts": [3, 4, 4],
+  "latency_ms": [1046.2, 76.0, 74.4],
+  "target_ms": 1000,
+  "cold_start_within_target": false,
+  "warmed_frames_within_target": true,
+  "note": "Model load is excluded; first inference still performs a cold runtime warm-up."
+}

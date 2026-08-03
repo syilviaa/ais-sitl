@@ -1,5 +1,7 @@
 """Tests for the end-to-end frame-to-VisionEvent pipeline."""
 
+from datetime import datetime, timezone
+
 import numpy as np
 import pytest
 
@@ -131,3 +133,65 @@ def test_pipeline_uses_real_geo_calculator(tmp_path):
     )
     assert distance_m == pytest.approx(75.0, abs=0.1)
     assert (tmp_path / f"{events[0].event_id}.jpg").is_file()
+
+
+def test_pipeline_measures_frame_to_alert_latency(tmp_path):
+    ticks = iter([10.0, 10.48])
+    timestamps = iter([
+        datetime(2026, 8, 3, 12, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 3, 12, 0, 0, 480000, tzinfo=timezone.utc),
+    ])
+    detection = Detection(
+        class_name=VisionClass.PERSON,
+        confidence=0.90,
+        bbox=BoundingBox(80, 40, 120, 60),
+    )
+    pipeline = VisionPipeline(
+        detector=FakeDetector([detection]),
+        geo_locator=FakeGeoLocator(),
+        snapshot_dir=tmp_path,
+        monotonic_clock=lambda: next(ticks),
+        utc_now=lambda: next(timestamps),
+    )
+
+    pipeline.process_frame(
+        np.zeros((100, 200, 3), dtype=np.uint8),
+        valid_telemetry(),
+        "latency.mp4",
+    )
+
+    assert pipeline.last_timing == {
+        "frame_received_at": "2026-08-03T12:00:00.000Z",
+        "alert_created_at": "2026-08-03T12:00:00.480Z",
+        "latency_ms": pytest.approx(480.0),
+        "within_target": True,
+    }
+
+
+def test_pipeline_marks_latency_over_one_second(tmp_path):
+    ticks = iter([20.0, 21.2])
+    timestamps = iter([
+        datetime(2026, 8, 3, 12, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 3, 12, 0, 1, 200000, tzinfo=timezone.utc),
+    ])
+    detection = Detection(
+        class_name=VisionClass.CAR,
+        confidence=0.90,
+        bbox=BoundingBox(80, 40, 120, 60),
+    )
+    pipeline = VisionPipeline(
+        detector=FakeDetector([detection]),
+        geo_locator=FakeGeoLocator(),
+        snapshot_dir=tmp_path,
+        monotonic_clock=lambda: next(ticks),
+        utc_now=lambda: next(timestamps),
+    )
+
+    pipeline.process_frame(
+        np.zeros((100, 200, 3), dtype=np.uint8),
+        valid_telemetry(),
+        "slow-latency.mp4",
+    )
+
+    assert pipeline.last_timing["latency_ms"] == pytest.approx(1200.0)
+    assert pipeline.last_timing["within_target"] is False
