@@ -106,6 +106,29 @@ def create_app(config=None):
     app.clients = set()
     app.pending_telemetry_clients = set()
 
+    # CV MVP (Мерей): vision service + Socket.IO alerts — does not invent GPS
+    try:
+        from backend.routes.vision import vision_bp
+        from backend.vision.event_pipeline import VisionEventPipeline
+        from backend.vision.socket_handler import VisionSocketHandler
+        from backend.vision.vision_service import VisionService
+
+        app.vision_service = VisionService()
+        app.vision_socket_handler = VisionSocketHandler(rate_limit_per_sec=10)
+        app.vision_pipeline = VisionEventPipeline(
+            service=app.vision_service,
+            socket_handler=app.vision_socket_handler,
+        )
+        app.vision_clients = {"detection": set(), "alert": set()}
+        app.register_blueprint(vision_bp)
+        logger.info("CV vision routes registered at /api/vision")
+    except Exception as exc:
+        logger.warning("CV vision module not loaded: %s", exc)
+        app.vision_service = None
+        app.vision_socket_handler = None
+        app.vision_pipeline = None
+        app.vision_clients = {"detection": set(), "alert": set()}
+
     # Spawn the GStreamer relay before any MAVSDK/gRPC session exists: forking a
     # process that already runs gRPC threads kills mavsdk_server (heartbeat loss).
     if video_relay.gstreamer_available:
@@ -1026,6 +1049,8 @@ def create_app(config=None):
         app.clients.discard(client_id)
         if app.telemetry_service:
             app.telemetry_service.unregister_client(client_id)
+        app.vision_clients['detection'].discard(client_id)
+        app.vision_clients['alert'].discard(client_id)
         logger.info(
             f"Client disconnected: {client_id} (total: {len(app.clients)})"
         )
@@ -1086,6 +1111,37 @@ def create_app(config=None):
             socketio.start_background_task(broadcast_fleet_status)
 
         emit('fleet_monitoring_started', {'client_id': client_id})
+
+    # ---- CV vision subscriptions (Мерей) ----
+    @socketio.on('subscribe_detections')
+    def on_subscribe_detections():
+        client_id = request.sid
+        app.vision_clients['detection'].add(client_id)
+        emit('response', {'status': 'subscribed', 'event_type': 'vision_detection'})
+
+    @socketio.on('subscribe_alerts')
+    def on_subscribe_alerts():
+        client_id = request.sid
+        app.vision_clients['alert'].add(client_id)
+        emit('response', {'status': 'subscribed', 'event_type': 'vision_alert'})
+
+    def _relay_vision(event_type, payload):
+        targets = app.vision_clients.get(
+            'detection' if event_type == 'vision_detection' else 'alert',
+            set(),
+        )
+        for sid in tuple(targets):
+            socketio.emit(event_type, payload, to=sid)
+
+    if app.vision_socket_handler is not None:
+        app.vision_socket_handler.subscribe(
+            'vision_detection',
+            lambda payload: _relay_vision('vision_detection', payload),
+        )
+        app.vision_socket_handler.subscribe(
+            'vision_alert',
+            lambda payload: _relay_vision('vision_alert', payload),
+        )
 
     # TODO: Mission-progress and failsafe events belong to other owners.
 

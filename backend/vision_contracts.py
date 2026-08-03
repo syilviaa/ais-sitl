@@ -1,9 +1,34 @@
+"""CV data contracts: TelemetrySnapshot and VisionEvent with JSON Schema validation."""
+from __future__ import annotations
+
 import json
 import uuid
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import List, Optional
+
 import jsonschema
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SCHEMA_TELEMETRY = _REPO_ROOT / "schema_telemetry.json"
+_SCHEMA_VISION = _REPO_ROOT / "schema_vision_event.json"
+
+_telemetry_schema_cache = None
+_vision_schema_cache = None
+
+
+def _load_schema(path: Path, cache_attr: str):
+    global _telemetry_schema_cache, _vision_schema_cache
+    if cache_attr == "telemetry":
+        if _telemetry_schema_cache is None:
+            with open(path, "r", encoding="utf-8") as f:
+                _telemetry_schema_cache = json.load(f)
+        return _telemetry_schema_cache
+    if _vision_schema_cache is None:
+        with open(path, "r", encoding="utf-8") as f:
+            _vision_schema_cache = json.load(f)
+    return _vision_schema_cache
 
 
 @dataclass
@@ -28,9 +53,7 @@ class TelemetrySnapshot:
         return cls(**data)
 
     def validate(self):
-        """Validate telemetry against schema."""
-        with open("schema_telemetry.json", "r") as f:
-            schema = json.load(f)
+        schema = _load_schema(_SCHEMA_TELEMETRY, "telemetry")
         jsonschema.validate(self.to_dict(), schema)
 
 
@@ -50,17 +73,14 @@ class VisionEvent:
 
     def to_dict(self):
         data = asdict(self)
-        data = {k: v for k, v in data.items() if v is not None}
-        return data
+        return {k: v for k, v in data.items() if v is not None}
 
     @classmethod
     def from_dict(cls, data: dict):
         return cls(**data)
 
     def validate(self):
-        """Validate event against schema."""
-        with open("schema_vision_event.json", "r") as f:
-            schema = json.load(f)
+        schema = _load_schema(_SCHEMA_VISION, "vision")
         jsonschema.validate(self.to_dict(), schema)
 
     @classmethod
@@ -76,8 +96,11 @@ class VisionEvent:
         processing_latency_ms: Optional[int] = None,
         track_id: Optional[str] = None,
     ):
-        """Factory method to create a new VisionEvent with UUID and UTC timestamp."""
-        utc_now = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+        utc_now = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
         return cls(
             event_id=str(uuid.uuid4()),
             timestamp=utc_now,

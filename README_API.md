@@ -278,6 +278,7 @@ If telemetry is invalid (missing fields, out of range altitude):
 pytest tests/unit/test_geo_calculator.py -v
 pytest tests/unit/test_vision_service.py -v
 pytest tests/unit/test_vision_contracts.py -v
+pytest tests/unit/test_merei_day3.py -v
 ```
 
 ### Test Fixtures
@@ -320,6 +321,20 @@ Expected error: ≤10 meters in demo scenarios.
 - VisionEvent via REST API: `/api/vision/latest`
 - Real-time updates via WebSocket: `vision_detection`, `vision_alert`
 - Snapshot URLs for display
+- Frontend client: `web/src/services/visionSocket.js`
+- Alerts panel: `web/src/components/VisionAlertsPanel.vue` (class, confidence %, UTC, lat/lon, snapshot)
+
+### Geo MAE report
+```bash
+curl http://127.0.0.1:5001/api/vision/geo/report
+```
+Returns `mae_m`, `center_mae_m`, `max_error_m` for altitudes 50/75/100 m and pitches 90/75/60°.
+
+### Error journal
+```bash
+curl http://127.0.0.1:5001/api/vision/errors
+```
+Missing telemetry / model / camera / schema failures are logged; no false GPS alerts are emitted.
 
 ## Development Setup
 

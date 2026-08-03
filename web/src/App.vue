@@ -137,6 +137,8 @@
           />
         </section>
 
+        <VisionAlertsPanel />
+
         <section class="panel event-panel">
           <h2>Журнал</h2>
           <div class="event-list">
@@ -160,6 +162,7 @@
 <script>
 import MapComponent from './components/MapComponent.vue'
 import VideoStream from './components/VideoStream.vue'
+import VisionAlertsPanel from './components/VisionAlertsPanel.vue'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
 import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
 
@@ -171,7 +174,7 @@ const API_BASE = import.meta.env.VITE_API_URL
 
 export default {
   name: 'App',
-  components: { MapComponent, VideoStream },
+  components: { MapComponent, VideoStream, VisionAlertsPanel },
   data() {
     return {
       apiConnected: false,
@@ -695,7 +698,7 @@ export default {
   width: 400px;
   flex-shrink: 0;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto auto minmax(120px, 1fr) auto;
   gap: 0.4rem;
   overflow: hidden;
   min-height: 0;
