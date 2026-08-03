@@ -1,13 +1,18 @@
-"""Geo validation: control points, MAE/max error reports for 50/75/100 m and pitch."""
+"""Geo validation: control points and meter-error checks for Pixel-to-GPS.
+
+camera_pitch_deg convention (same as GeoCalculator / Zhanel):
+  negative = down, -90 = nadir, 0 = horizon.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional
 import math
 
+from backend.geo.geo_calculator import GeoTelemetry
+
 if TYPE_CHECKING:
     from backend.geo.geo_calculator import GeoCalculator
-    from backend.vision_contracts import TelemetrySnapshot
 
 
 @dataclass
@@ -20,7 +25,7 @@ class ControlPoint:
     expected_lon: float
     scenario_name: str
     altitude_m: float
-    camera_pitch_deg: float = 90.0
+    camera_pitch_deg: float = -90.0
     drone_yaw_deg: float = 0.0
     camera_yaw_deg: float = 0.0
 
@@ -51,15 +56,15 @@ class GeoValidator:
     @classmethod
     def get_control_points(cls) -> List[ControlPoint]:
         """
-        Control points at 50/75/100 m and several pitches.
+        Control points at 50/75/100 m and look-down pitches -90/-75/-60.
 
-        Frame-center + nadir/near-nadir expected GPS = drone position.
-        Edge points use independent flat-earth FOV projection for expected lon/lat.
+        Frame-center expected GPS = drone position (model projects center to nadir ray).
+        Edge points at nadir use independent flat-earth FOV projection for expected lon.
         """
         points: List[ControlPoint] = []
 
         for alt in (50.0, 75.0, 100.0):
-            for pitch in (90.0, 75.0, 60.0):
+            for pitch in (-90.0, -75.0, -60.0):
                 points.append(
                     ControlPoint(
                         pixel_x=960,
@@ -72,7 +77,7 @@ class GeoValidator:
                     )
                 )
 
-            # Left / right edge at nadir — expected via same FOV model (independent of calculator class)
+            # Left / right edge at nadir (-90)
             half_width_m = alt * math.tan(math.radians(cls.HFOV_DEG / 2.0))
             lon_delta = (half_width_m / 6371000.0 * (180 / math.pi)) / math.cos(
                 math.radians(cls.DRONE_LAT)
@@ -85,7 +90,7 @@ class GeoValidator:
                     expected_lon=cls.DRONE_LON - lon_delta,
                     scenario_name=f"{int(alt)}m_nadir_left_edge",
                     altitude_m=alt,
-                    camera_pitch_deg=90.0,
+                    camera_pitch_deg=-90.0,
                 )
             )
             points.append(
@@ -96,7 +101,7 @@ class GeoValidator:
                     expected_lon=cls.DRONE_LON + lon_delta,
                     scenario_name=f"{int(alt)}m_nadir_right_edge",
                     altitude_m=alt,
-                    camera_pitch_deg=90.0,
+                    camera_pitch_deg=-90.0,
                 )
             )
 
@@ -127,10 +132,8 @@ class GeoValidator:
         return error_m <= max_error_m
 
     @classmethod
-    def telemetry_for_point(cls, point: ControlPoint) -> "TelemetrySnapshot":
-        from backend.vision_contracts import TelemetrySnapshot
-
-        return TelemetrySnapshot(
+    def telemetry_for_point(cls, point: ControlPoint) -> GeoTelemetry:
+        return GeoTelemetry(
             timestamp="2026-08-03T12:00:00Z",
             latitude=cls.DRONE_LAT,
             longitude=cls.DRONE_LON,
@@ -150,11 +153,7 @@ class GeoValidator:
         calculator: Optional["GeoCalculator"] = None,
         max_error_m: float = 10.0,
     ) -> Dict:
-        """
-        Run Pixel-to-GPS on all control points; return MAE / max error summary.
-
-        Target for demo set: mean 5–10 m, max ≤ 10 m on center/nadir cases.
-        """
+        """Run pixel_to_gps on all control points; return MAE / max error summary."""
         from backend.geo.geo_calculator import GeoCalculator
 
         calc = calculator or GeoCalculator()
@@ -163,7 +162,9 @@ class GeoValidator:
         for point in cls.get_control_points():
             telemetry = cls.telemetry_for_point(point)
             lat, lon = calc.pixel_to_gps((point.pixel_x, point.pixel_y), telemetry)
-            error = cls.calculate_error_m(lat, lon, point.expected_lat, point.expected_lon)
+            error = cls.calculate_error_m(
+                lat, lon, point.expected_lat, point.expected_lon
+            )
             results.append(
                 ScenarioResult(
                     scenario_name=point.scenario_name,
@@ -190,10 +191,11 @@ class GeoValidator:
             "max_error_m": round(max_err, 3),
             "target_max_m": max_error_m,
             "target_mae_range_m": [5.0, 10.0],
+            "camera_pitch_convention": "negative_down_nadir_minus_90",
             "scenarios": [asdict(r) for r in results],
             "pass_center_max_10m": all(e <= max_error_m for e in center_errors),
             "notes": (
-                "Flat-earth + FOV model; center points should stay within 10 m. "
-                "Edge cases may exceed 10 m — documented MVP limitation."
+                "camera_pitch_deg: negative=down, -90=nadir, 0=horizon. "
+                "Center points should stay within 10 m."
             ),
         }

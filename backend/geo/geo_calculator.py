@@ -1,9 +1,18 @@
-"""Pixel-to-GPS using flat-earth model (MVP, small area)."""
+"""Pixel-to-GPS using flat-earth model (MVP, small area).
+
+camera_pitch_deg convention (aligned with Zhanel / VisionTelemetry):
+  - negative = looking down
+  - 0 = horizon (level)
+  - -90 = nadir (straight down)
+  - positive = looking up (not used in MVP down-looking flights)
+
+Do not pass the old “nadir = +90” convention into this calculator.
+"""
+from __future__ import annotations
+
 import math
 from dataclasses import dataclass
-from typing import Optional, Tuple
-
-from backend.vision_contracts import TelemetrySnapshot
+from typing import Optional, Protocol, Tuple
 
 
 @dataclass
@@ -22,24 +31,58 @@ class BBox:
         return (self.y1 + self.y2) / 2.0
 
 
+@dataclass(frozen=True)
+class GeoTelemetry:
+    """Minimal telemetry needed for Pixel-to-GPS (no API/contracts dependency)."""
+
+    latitude: float
+    longitude: float
+    altitude_m: float
+    drone_yaw_deg: float
+    camera_pitch_deg: float
+    camera_yaw_deg: float
+    hfov_deg: float
+    vfov_deg: float
+    frame_width: int = 1920
+    frame_height: int = 1080
+    timestamp: str = "2026-08-03T12:00:00Z"
+
+
+class TelemetryLike(Protocol):
+    """Duck-typed telemetry: VisionTelemetry / TelemetrySnapshot both work."""
+
+    latitude: float
+    longitude: float
+    altitude_m: float
+    drone_yaw_deg: float
+    camera_pitch_deg: float
+    camera_yaw_deg: float
+    hfov_deg: float
+    vfov_deg: float
+    frame_width: int
+    frame_height: int
+
+
 class GeoCalculator:
     """
-    Converts pixel coordinates to GPS coordinates using flat-earth model.
+    Converts pixel coordinates to GPS using a flat-earth + pinhole FOV model.
 
-    Assumptions (document in README):
-    - Flat earth for small demo areas
-    - Pinhole camera + known FOV
-    - No DEM / lens distortion correction
+    Assumptions:
+    - Small demo area (flat earth OK)
+    - Known HFOV/VFOV, no DEM / lens distortion
+    - camera_pitch_deg: negative down, -90 nadir, 0 horizon
     """
 
     EARTH_RADIUS_M = 6371000.0
     MIN_ALTITUDE_M = 50.0
     MAX_ALTITUDE_M = 100.0
+    # Reject pitches closer to horizon than this (degrees below level).
+    MIN_LOOKDOWN_DEG = 10.0  # require pitch <= -10
 
     def pixel_to_gps(
         self,
         bbox_center: Tuple[float, float],
-        telemetry: TelemetrySnapshot,
+        telemetry: TelemetryLike,
     ) -> Tuple[float, float]:
         """
         Convert bbox center pixel coordinates to GPS lat/lon.
@@ -67,16 +110,11 @@ class GeoCalculator:
         alt = telemetry.altitude_m
         hfov_rad = math.radians(telemetry.hfov_deg)
         vfov_rad = math.radians(telemetry.vfov_deg)
-        camera_pitch_rad = math.radians(telemetry.camera_pitch_deg)
 
-        # pitch 90° = nadir; reject near-horizon views that blow up the model
-        pitch_from_nadir = camera_pitch_rad - math.pi / 2.0
-        if abs(pitch_from_nadir) >= math.radians(80):
-            raise ValueError(
-                f"camera_pitch_deg={telemetry.camera_pitch_deg} too close to horizon for MVP model"
-            )
+        # pitch: -90 nadir → angle_from_nadir = 0; -60 → 30° from nadir toward horizon
+        angle_from_nadir_rad = math.radians(telemetry.camera_pitch_deg + 90.0)
+        horizontal_distance = alt / math.cos(angle_from_nadir_rad)
 
-        horizontal_distance = alt / math.cos(pitch_from_nadir)
         ground_offset_x_cam = horizontal_distance * math.tan(hfov_rad / 2.0) * norm_x
         ground_offset_y_cam = horizontal_distance * math.tan(vfov_rad / 2.0) * norm_y
 
@@ -96,7 +134,7 @@ class GeoCalculator:
     def safe_pixel_to_gps(
         self,
         bbox_center: Tuple[float, float],
-        telemetry: Optional[TelemetrySnapshot],
+        telemetry: Optional[TelemetryLike],
     ) -> Optional[Tuple[float, float]]:
         """Return lat/lon or None — never fabricates coordinates on bad input."""
         if telemetry is None:
@@ -121,7 +159,7 @@ class GeoCalculator:
         c = 2 * math.asin(math.sqrt(a))
         return self.EARTH_RADIUS_M * c
 
-    def _validate_telemetry(self, telemetry: TelemetrySnapshot) -> None:
+    def _validate_telemetry(self, telemetry: TelemetryLike) -> None:
         if telemetry is None:
             raise ValueError("telemetry is required")
 
@@ -150,6 +188,16 @@ class GeoCalculator:
             raise ValueError(f"invalid latitude: {telemetry.latitude}")
         if not (-180 <= telemetry.longitude <= 180):
             raise ValueError(f"invalid longitude: {telemetry.longitude}")
+        if not (-90 <= telemetry.camera_pitch_deg <= 90):
+            raise ValueError(
+                f"camera_pitch_deg {telemetry.camera_pitch_deg} outside [-90, 90]"
+            )
+        # Looking down only for MVP; reject near-horizon / upward views
+        if telemetry.camera_pitch_deg > -self.MIN_LOOKDOWN_DEG:
+            raise ValueError(
+                f"camera_pitch_deg={telemetry.camera_pitch_deg}: expected negative "
+                f"look-down (≤ -{self.MIN_LOOKDOWN_DEG}), nadir=-90, horizon=0"
+            )
         if telemetry.hfov_deg <= 0 or telemetry.vfov_deg <= 0:
             raise ValueError("FOV must be positive")
         if telemetry.frame_width <= 0 or telemetry.frame_height <= 0:
