@@ -1,8 +1,10 @@
 """Tests for the end-to-end frame-to-VisionEvent pipeline."""
 
 import numpy as np
+import pytest
 
 from src.backend.services.vision_contracts import VisionTelemetry
+from src.backend.geo.geo_calculator import GeoCalculator
 from src.vision.models import (
     BoundingBox,
     Detection,
@@ -100,3 +102,32 @@ def test_pipeline_returns_no_events_for_empty_detection(tmp_path):
 
     assert events == []
     assert list(tmp_path.iterdir()) == []
+
+
+def test_pipeline_uses_real_geo_calculator(tmp_path):
+    frame = np.zeros((100, 200, 3), dtype=np.uint8)
+    center_detection = Detection(
+        class_name=VisionClass.CAR,
+        confidence=0.88,
+        bbox=BoundingBox(80, 40, 120, 60),
+    )
+    pipeline = VisionPipeline(
+        detector=FakeDetector([center_detection]),
+        geo_locator=GeoCalculator(),
+        snapshot_dir=tmp_path,
+    )
+    telemetry = valid_telemetry()
+
+    events = pipeline.process_frame(frame, telemetry, "real-geo.mp4")
+
+    assert len(events) == 1
+    assert events[0].latitude == pytest.approx(telemetry.latitude)
+    assert events[0].longitude > telemetry.longitude
+    distance_m = GeoCalculator().calculate_distance_m(
+        telemetry.latitude,
+        telemetry.longitude,
+        events[0].latitude,
+        events[0].longitude,
+    )
+    assert distance_m == pytest.approx(75.0, abs=0.1)
+    assert (tmp_path / f"{events[0].event_id}.jpg").is_file()
