@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-08-01T09:00:00Z",
+  "latitude": 51.1694,
+  "longitude": 71.4491,
+  "altitude_m": 75.0,
+  "drone_yaw_deg": 90.0,
+  "camera_pitch_deg": -60.0,
+  "camera_yaw_deg": 0.0,
+  "hfov_deg": 90.0,
+  "vfov_deg": 60.0,
+  "frame_width": 1920,
+  "frame_height": 1080
+}

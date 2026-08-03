@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ais-sitl.local/schemas/vision-event.json",
+  "title": "AIS SITL VisionEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "timestamp", "class_name", "confidence", "bbox", "latitude", "longitude", "snapshot_url", "source_id"],
+  "properties": {
+    "event_id": {"type": "string", "format": "uuid"},
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "class_name": {"enum": ["Person", "Car", "Truck_Machinery"]},
+    "confidence": {"type": "number", "minimum": 0.65, "maximum": 1},
+    "bbox": {"type": "array", "items": {"type": "number"}, "minItems": 4, "maxItems": 4},
+    "latitude": {"type": "number", "minimum": -90, "maximum": 90},
+    "longitude": {"type": "number", "minimum": -180, "maximum": 180},
+    "snapshot_url": {"type": "string", "minLength": 1},
+    "source_id": {"type": "string", "minLength": 1}
+  }
+}

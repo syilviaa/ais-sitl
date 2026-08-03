@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ais-sitl.local/schemas/cv-telemetry.json",
+  "title": "AIS SITL CV Telemetry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["timestamp", "latitude", "longitude", "altitude_m", "drone_yaw_deg", "camera_pitch_deg", "camera_yaw_deg", "hfov_deg", "vfov_deg", "frame_width", "frame_height"],
+  "properties": {
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "latitude": {"type": "number", "minimum": -90, "maximum": 90},
+    "longitude": {"type": "number", "minimum": -180, "maximum": 180},
+    "altitude_m": {"type": "number", "minimum": 50, "maximum": 100},
+    "drone_yaw_deg": {"type": "number", "minimum": 0, "exclusiveMaximum": 360},
+    "camera_pitch_deg": {"type": "number", "minimum": -90, "maximum": 90},
+    "camera_yaw_deg": {"type": "number", "minimum": -180, "maximum": 180},
+    "hfov_deg": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 180},
+    "vfov_deg": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 180},
+    "frame_width": {"type": "integer", "minimum": 1},
+    "frame_height": {"type": "integer", "minimum": 1}
+  }
+}
