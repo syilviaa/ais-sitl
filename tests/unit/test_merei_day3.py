@@ -15,7 +15,7 @@ def _telemetry(**overrides):
         longitude=-122.4194,
         altitude_m=75,
         drone_yaw_deg=0,
-        camera_pitch_deg=90,
+        camera_pitch_deg=-90,
         camera_yaw_deg=0,
         hfov_deg=62,
         vfov_deg=48,

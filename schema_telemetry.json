@@ -46,7 +46,7 @@
       "type": "number",
       "minimum": -90,
       "maximum": 90,
-      "description": "Camera pitch (nadir=90, horizon=0)"
+      "description": "Camera pitch (negative=down, nadir=-90, horizon=0)"
     },
     "camera_yaw_deg": {
       "type": "number",
