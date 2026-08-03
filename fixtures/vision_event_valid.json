@@ -1,0 +1,12 @@
+{
+  "event_id": "550e8400-e29b-41d4-a716-446655440000",
+  "timestamp": "2026-08-03T12:00:00Z",
+  "class_name": "Person",
+  "confidence": 0.87,
+  "bbox": [100, 150, 200, 400],
+  "latitude": 37.7749,
+  "longitude": -122.4194,
+  "snapshot_url": "/snapshots/550e8400-e29b-41d4-a716-446655440000.jpg",
+  "source_id": "local_file",
+  "processing_latency_ms": 45
+}

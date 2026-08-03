@@ -1,0 +1,60 @@
+[
+  {
+    "name": "missing_timestamp",
+    "data": {
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "altitude_m": 75,
+      "drone_yaw_deg": 45,
+      "camera_pitch_deg": 70,
+      "camera_yaw_deg": 0,
+      "hfov_deg": 62,
+      "vfov_deg": 48,
+      "frame_width": 1920,
+      "frame_height": 1080
+    }
+  },
+  {
+    "name": "altitude_too_low",
+    "data": {
+      "timestamp": "2026-08-03T12:00:00Z",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "altitude_m": 30,
+      "drone_yaw_deg": 45,
+      "camera_pitch_deg": 70,
+      "camera_yaw_deg": 0,
+      "hfov_deg": 62,
+      "vfov_deg": 48,
+      "frame_width": 1920,
+      "frame_height": 1080
+    }
+  },
+  {
+    "name": "altitude_too_high",
+    "data": {
+      "timestamp": "2026-08-03T12:00:00Z",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "altitude_m": 150,
+      "drone_yaw_deg": 45,
+      "camera_pitch_deg": 70,
+      "camera_yaw_deg": 0,
+      "hfov_deg": 62,
+      "vfov_deg": 48,
+      "frame_width": 1920,
+      "frame_height": 1080
+    }
+  },
+  {
+    "name": "missing_orientation",
+    "data": {
+      "timestamp": "2026-08-03T12:00:00Z",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "altitude_m": 75,
+      "frame_width": 1920,
+      "frame_height": 1080
+    }
+  }
+]

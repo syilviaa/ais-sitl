@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Telemetry Snapshot",
+  "description": "Drone telemetry with camera orientation for AIS SITL CV MVP",
+  "type": "object",
+  "required": [
+    "timestamp",
+    "latitude",
+    "longitude",
+    "altitude_m",
+    "drone_yaw_deg",
+    "camera_pitch_deg",
+    "camera_yaw_deg",
+    "hfov_deg",
+    "vfov_deg",
+    "frame_width",
+    "frame_height"
+  ],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC, e.g. 2026-08-03T12:00:00Z"
+    },
+    "latitude": {
+      "type": "number",
+      "description": "Latitude in decimal degrees"
+    },
+    "longitude": {
+      "type": "number",
+      "description": "Longitude in decimal degrees"
+    },
+    "altitude_m": {
+      "type": "number",
+      "minimum": 50,
+      "maximum": 100,
+      "description": "Altitude above ground in meters (50-100m for MVP)"
+    },
+    "drone_yaw_deg": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 360,
+      "description": "Drone heading in degrees"
+    },
+    "camera_pitch_deg": {
+      "type": "number",
+      "minimum": -90,
+      "maximum": 90,
+      "description": "Camera pitch (nadir=90, horizon=0)"
+    },
+    "camera_yaw_deg": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 360,
+      "description": "Camera yaw relative to drone heading"
+    },
+    "hfov_deg": {
+      "type": "number",
+      "minimum": 20,
+      "maximum": 120,
+      "description": "Horizontal field of view in degrees"
+    },
+    "vfov_deg": {
+      "type": "number",
+      "minimum": 20,
+      "maximum": 120,
+      "description": "Vertical field of view in degrees"
+    },
+    "frame_width": {
+      "type": "integer",
+      "const": 1920,
+      "description": "Frame width in pixels (1920 for 1080p)"
+    },
+    "frame_height": {
+      "type": "integer",
+      "const": 1080,
+      "description": "Frame height in pixels (1080 for 1080p)"
+    }
+  }
+}
