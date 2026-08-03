@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import json
 import math
+from uuid import UUID, uuid4
 
 
 class VisionContractError(ValueError):
@@ -87,6 +88,93 @@ class VisionTelemetry:
 
     def to_dict(self):
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class VisionEvent:
+    """JSON-ready backend event created from one detector result."""
+
+    event_id: str
+    timestamp: str
+    class_name: str
+    confidence: float
+    bbox: tuple
+    latitude: float
+    longitude: float
+    snapshot_url: str
+    source_id: str
+
+    def __post_init__(self):
+        try:
+            parsed_id = UUID(self.event_id)
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise VisionContractError("event_id must be a UUID") from exc
+        if str(parsed_id) != self.event_id:
+            raise VisionContractError("event_id must use canonical UUID format")
+
+        parse_utc_timestamp(self.timestamp)
+        if self.class_name not in {"Person", "Car", "Truck_Machinery"}:
+            raise VisionContractError("class_name is not supported")
+        if not 0.65 <= self.confidence <= 1.0:
+            raise VisionContractError("confidence must be in [0.65, 1]")
+        if len(self.bbox) != 4:
+            raise VisionContractError("bbox must contain four coordinates")
+        if not all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            for value in self.bbox
+        ):
+            raise VisionContractError("bbox coordinates must be finite numbers")
+        if self.bbox[2] <= self.bbox[0] or self.bbox[3] <= self.bbox[1]:
+            raise VisionContractError("bbox must have positive width and height")
+        if not -90 <= self.latitude <= 90:
+            raise VisionContractError("latitude must be in [-90, 90]")
+        if not -180 <= self.longitude <= 180:
+            raise VisionContractError("longitude must be in [-180, 180]")
+        if not self.snapshot_url:
+            raise VisionContractError("snapshot_url cannot be blank")
+        if not self.source_id:
+            raise VisionContractError("source_id cannot be blank")
+
+    @classmethod
+    def from_detection(
+        cls,
+        detection,
+        latitude,
+        longitude,
+        snapshot_url,
+        source_id,
+        event_id=None,
+        timestamp=None,
+    ):
+        captured_at = timestamp or datetime.now(timezone.utc).isoformat(
+            timespec="milliseconds"
+        ).replace("+00:00", "Z")
+        return cls(
+            event_id=event_id or str(uuid4()),
+            timestamp=captured_at,
+            class_name=detection.class_name.value,
+            confidence=float(detection.confidence),
+            bbox=tuple(detection.bbox.to_list()),
+            latitude=float(latitude),
+            longitude=float(longitude),
+            snapshot_url=str(snapshot_url),
+            source_id=str(source_id),
+        )
+
+    def to_dict(self):
+        return {
+            "event_id": self.event_id,
+            "timestamp": self.timestamp,
+            "class_name": self.class_name,
+            "confidence": self.confidence,
+            "bbox": list(self.bbox),
+            "latitude": self.latitude,
+            "longitude": self.longitude,
+            "snapshot_url": self.snapshot_url,
+            "source_id": self.source_id,
+        }
 
 
 def load_schema(name):
