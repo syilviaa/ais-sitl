@@ -156,7 +156,7 @@ def build_parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--source", required=True, help="Video file path")
     p.add_argument("--model", required=True, help="YOLO .pt model")
-    p.add_argument("--confidence", type=float, default=0.45)
+    p.add_argument("--confidence", type=float, default=0.65)
     p.add_argument("--device", default="cpu")
     p.add_argument("--max-frames", type=int)
     p.add_argument("--loop", action="store_true", help="Replay video until q")

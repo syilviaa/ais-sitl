@@ -76,3 +76,7 @@ node_modules/
 
 # Local CV virtual environment
 .venv-cv/
+
+# Runtime CV snapshots (generated during demos)
+snapshots/
+*.mp4v.tmp.mp4

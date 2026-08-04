@@ -40,6 +40,7 @@ from src.backend.services.vision_event_service import (
     SlidingWindowRateLimiter,
     VisionEventService,
 )
+from src.backend.services.annotated_frame_store import AnnotatedFrameStore
 from src.backend.routes.vision import vision_bp
 from src.backend import database
 from src.backend.async_runner import run_async, schedule_coroutine
@@ -115,6 +116,7 @@ def create_app(config=None):
     app.clients = set()
     app.pending_telemetry_clients = set()
     app.vision_service = VisionEventService()
+    app.annotated_frame_store = AnnotatedFrameStore()
     app.vision_rate_limiter = SlidingWindowRateLimiter(limit=10)
     app.vision_clients = {"detection": set(), "alert": set()}
     app.register_blueprint(vision_bp)

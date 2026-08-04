@@ -31,6 +31,28 @@ def publish_event(event, backend_url, session=requests):
     return response.json()
 
 
+def publish_annotated_frame(frame_bgr, backend_url, session=requests, quality=80):
+    """Push one annotated JPEG to the dashboard MJPEG buffer."""
+    import cv2
+
+    ok, encoded = cv2.imencode(
+        ".jpg",
+        frame_bgr,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)],
+    )
+    if not ok:
+        raise RuntimeError("Failed to JPEG-encode annotated frame")
+    endpoint = f"{backend_url.rstrip('/')}/api/vision/annotated-frame"
+    response = session.post(
+        endpoint,
+        data=encoded.tobytes(),
+        headers={"Content-Type": "image/jpeg"},
+        timeout=5,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def run(args):
     telemetry_payload = json.loads(
         Path(args.telemetry).read_text(encoding="utf-8")
@@ -40,10 +62,18 @@ def run(args):
         UltralyticsBackend(args.model, device=args.device),
         confidence_threshold=args.confidence,
     )
+
+    session = requests.Session()
+
+    def on_annotated(frame, _detections):
+        if args.publish_annotated:
+            publish_annotated_frame(frame, args.backend_url, session=session)
+
     pipeline = VisionPipeline(
         detector,
         GeoCalculator(),
         args.snapshots,
+        annotated_frame_callback=on_annotated if args.publish_annotated else None,
     )
     processed_frames = 0
     published_events = 0
@@ -61,7 +91,7 @@ def run(args):
             events = pipeline.process_frame(frame, telemetry, args.source)
             processed_frames += 1
             for event in events:
-                publish_event(event, args.backend_url)
+                publish_event(event, args.backend_url, session=session)
                 published_events += 1
 
     return {
@@ -83,11 +113,23 @@ def build_parser():
     )
     parser.add_argument(
         "--snapshots",
-        default="/private/tmp/ais-sitl-vision-snapshots",
+        default="snapshots",
     )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--confidence", type=float, default=0.65)
     parser.add_argument("--max-frames", type=int)
+    parser.add_argument(
+        "--publish-annotated",
+        action="store_true",
+        default=True,
+        help="Push annotated frames to /api/vision/mjpeg (default: on)",
+    )
+    parser.add_argument(
+        "--no-publish-annotated",
+        action="store_false",
+        dest="publish_annotated",
+        help="Disable annotated MJPEG publishing",
+    )
     return parser
 
 

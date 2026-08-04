@@ -103,6 +103,7 @@ class VisionEvent:
     longitude: float
     snapshot_url: str
     source_id: str
+    processing_latency_ms: float | None = None
 
     def __post_init__(self):
         try:
@@ -136,6 +137,16 @@ class VisionEvent:
             raise VisionContractError("snapshot_url cannot be blank")
         if not self.source_id:
             raise VisionContractError("source_id cannot be blank")
+        if self.processing_latency_ms is not None:
+            if (
+                isinstance(self.processing_latency_ms, bool)
+                or not isinstance(self.processing_latency_ms, (int, float))
+                or not math.isfinite(self.processing_latency_ms)
+                or self.processing_latency_ms < 0
+            ):
+                raise VisionContractError(
+                    "processing_latency_ms must be a non-negative finite number"
+                )
 
     @classmethod
     def from_detection(
@@ -147,6 +158,7 @@ class VisionEvent:
         source_id,
         event_id=None,
         timestamp=None,
+        processing_latency_ms=None,
     ):
         captured_at = timestamp or datetime.now(timezone.utc).isoformat(
             timespec="milliseconds"
@@ -161,10 +173,15 @@ class VisionEvent:
             longitude=float(longitude),
             snapshot_url=str(snapshot_url),
             source_id=str(source_id),
+            processing_latency_ms=(
+                None
+                if processing_latency_ms is None
+                else float(processing_latency_ms)
+            ),
         )
 
     def to_dict(self):
-        return {
+        payload = {
             "event_id": self.event_id,
             "timestamp": self.timestamp,
             "class_name": self.class_name,
@@ -175,6 +192,10 @@ class VisionEvent:
             "snapshot_url": self.snapshot_url,
             "source_id": self.source_id,
         }
+        if self.processing_latency_ms is not None:
+            payload["processing_latency_ms"] = self.processing_latency_ms
+        return payload
+
 
 
 def load_schema(name):

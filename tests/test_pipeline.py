@@ -152,7 +152,8 @@ def test_pipeline_uses_real_geo_calculator(tmp_path):
 
 
 def test_pipeline_measures_frame_to_alert_latency(tmp_path):
-    ticks = iter([10.0, 10.48])
+    # start, mid-event latency sample, final latency sample
+    ticks = iter([10.0, 10.24, 10.48])
     timestamps = iter([
         datetime(2026, 8, 3, 12, 0, 0, tzinfo=timezone.utc),
         datetime(2026, 8, 3, 12, 0, 0, 480000, tzinfo=timezone.utc),
@@ -185,7 +186,7 @@ def test_pipeline_measures_frame_to_alert_latency(tmp_path):
 
 
 def test_pipeline_marks_latency_over_one_second(tmp_path):
-    ticks = iter([20.0, 21.2])
+    ticks = iter([20.0, 20.6, 21.2])
     timestamps = iter([
         datetime(2026, 8, 3, 12, 0, 0, tzinfo=timezone.utc),
         datetime(2026, 8, 3, 12, 0, 1, 200000, tzinfo=timezone.utc),

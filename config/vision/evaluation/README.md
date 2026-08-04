@@ -1,45 +1,17 @@
-# Fixed CV evaluation dataset
+# CV evaluation dataset (MVP smoke)
 
-This directory intentionally does not contain generated labels. Add only
-human-reviewed frames extracted from the agreed test videos.
-
-Required coverage:
-
-- top-down and angled camera views;
-- `Person`, `Car` and `Truck_Machinery` objects;
-- varied object sizes and partially occluded objects;
-- a fixed train-independent test split.
-
-Expected layout:
-
-```text
-dataset/
-  images/
-    frame_000001.jpg
-  labels/
-    frame_000001.txt
-```
-
-Each label line uses normalized YOLO coordinates:
-
-```text
-class_id x_center y_center width height
-```
-
-Canonical dataset class IDs are `0=Person`, `1=Car`, and
-`2=Truck_Machinery`. Every image must have a matching label file; an empty
-file means the image was reviewed and contains none of the three classes.
-
-Run the fixed evaluation with:
+Images + YOLO-format labels for Person(0) / Car(1) / Truck_Machinery(2).
 
 ```bash
-python scripts/evaluate_cv_map.py \
-  --images /path/to/dataset/images \
-  --labels /path/to/dataset/labels \
+PYTHONPATH=. python scripts/evaluate_cv_map.py \
+  --images config/vision/evaluation/images \
+  --labels config/vision/evaluation/labels \
   --model /path/to/yolov8n.pt \
-  --output reports/vision/map50.json
+  --output config/vision/evaluation/map50.json
 ```
 
-The report contains AP@0.5 for every class and overall mAP@0.5. A missing
-ground-truth class is reported as `null`; it must never be presented as a
-successful zero-error evaluation.
+Acceptance gate from TZ: **mAP@0.5 ≥ 0.75**.
+
+Current smoke set is a small reviewed static-photo set (street / car / bus).
+Replace with human-labeled top-down + angled drone frames before publishing
+a formal mAP claim.

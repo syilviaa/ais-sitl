@@ -235,7 +235,8 @@ export default {
         modelName: '',
         fps: null,
         latencyMs: null,
-        useMjpeg: false,
+        useMjpeg: true,
+        useAnnotatedStream: false,
       },
       unsubTelemetry: null,
       unsubWsStatus: null,
@@ -250,12 +251,15 @@ export default {
   computed: {
     visionVideoSrc() {
       if (this.vision.videoSrc) return this.vision.videoSrc
-      if (this.vision.useMjpeg && this.droneReady) {
+      // Prefer Gazebo simulator camera; CV boxes overlay via VisionOverlay events
+      if (this.vision.useMjpeg) {
         return `${API_BASE}/video/mjpeg`
       }
+      if (this.vision.useAnnotatedStream) {
+        return `${API_BASE}/vision/mjpeg`
+      }
       return ''
-    },
-    wsStatusLabel() {
+    },    wsStatusLabel() {
       const map = {
         connected: 'ЭФИР',
         reconnecting: 'ПОДКЛ',
@@ -346,11 +350,20 @@ export default {
           const videoStatus = await fetch(`${API_BASE}/video/status`).catch(() => null)
           if (videoStatus?.ok) {
             const vs = await videoStatus.json()
-            const live = Boolean(vs.running || vs.clients > 0 || vs.gstreamer_available)
             this.vision.useMjpeg = Boolean(vs.gstreamer_available)
-            if (live && this.droneReady) {
+            if (vs.has_frame) {
               this.vision.cameraStatus = 'connected'
               this.vision.streamStatus = 'live'
+              this.vision.useAnnotatedStream = false
+              const out = String(vs.output || '')
+              const match = out.match(/(\d+)\s*x\s*(\d+)/i)
+              if (match) {
+                this.vision.frameWidth = Number(match[1])
+                this.vision.frameHeight = Number(match[2])
+              }
+            } else if (vs.gstreamer_available) {
+              this.vision.cameraStatus = 'connected'
+              this.vision.streamStatus = vs.relay_running ? 'waiting' : 'stopped'
             }
           }
           const latest = await fetch(`${API_BASE}/vision/latest?limit=8`)
@@ -931,8 +944,10 @@ export default {
 }
 
 .cv-runtime :deep(.vision-overlay) {
-  min-height: 110px;
-  max-height: 180px;
+  flex: 1 1 auto;
+  min-height: 180px;
+  max-height: none;
+  height: 100%;
 }
 
 .cv-runtime :deep(.vision-alerts) {

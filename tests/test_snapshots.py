@@ -21,8 +21,10 @@ def test_snapshot_writer_saves_annotated_frame_and_crop(tmp_path):
     assert saved.event_id == event_id
     assert saved.snapshot_path == tmp_path / f"{event_id}.jpg"
     assert saved.crop_path == tmp_path / f"{event_id}_crop.jpg"
+    assert saved.full_path == tmp_path / f"{event_id}_full.jpg"
     assert saved.snapshot_path.is_file()
     assert saved.crop_path.is_file()
+    assert saved.full_path.is_file()
 
 
 def test_snapshot_writer_rejects_empty_frame(tmp_path):

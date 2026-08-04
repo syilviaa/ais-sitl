@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Blueprint, current_app, jsonify, request, send_file
+from flask import Blueprint, Response, current_app, jsonify, request, send_file
 
 from src.backend.services.vision_contracts import (
     VisionContractError,
@@ -61,6 +61,7 @@ def create_event():
             longitude=payload.get("longitude"),
             snapshot_url=payload.get("snapshot_url"),
             source_id=payload.get("source_id"),
+            processing_latency_ms=payload.get("processing_latency_ms"),
         )
         current_app.publish_vision_event(event)
     except (VisionContractError, TypeError, ValueError) as exc:
@@ -86,12 +87,57 @@ def errors():
 
 @vision_bp.get("/health")
 def health():
+    frame_meta = {}
+    store = getattr(current_app, "annotated_frame_store", None)
+    if store is not None:
+        frame_meta = store.meta()
     return jsonify({
         "success": True,
         "status": "healthy",
         "timestamp": _utc_now(),
         "stats": current_app.vision_service.stats(),
+        "annotated_stream": frame_meta,
     })
+
+
+@vision_bp.post("/annotated-frame")
+def upload_annotated_frame():
+    """Accept one JPEG annotated frame from the CV pipeline."""
+    store = getattr(current_app, "annotated_frame_store", None)
+    if store is None:
+        return jsonify({"success": False, "error": "Annotated store missing"}), 500
+    data = request.get_data(cache=False)
+    if not data:
+        return jsonify({"success": False, "error": "JPEG body required"}), 400
+    try:
+        frame_count = store.update(data)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    return jsonify({"success": True, "frame_count": frame_count}), 201
+
+
+@vision_bp.get("/mjpeg")
+def annotated_mjpeg():
+    """Live MJPEG of the latest CV-annotated frames (boxes on video)."""
+    store = getattr(current_app, "annotated_frame_store", None)
+    if store is None:
+        return jsonify({"success": False, "error": "Annotated store missing"}), 500
+    boundary = b"frame"
+    return Response(
+        store.mjpeg_generator(boundary=boundary),
+        mimetype=f"multipart/x-mixed-replace; boundary={boundary.decode('ascii')}",
+    )
+
+
+@vision_bp.get("/annotated/latest.jpg")
+def annotated_latest_jpeg():
+    store = getattr(current_app, "annotated_frame_store", None)
+    if store is None:
+        return jsonify({"success": False, "error": "Annotated store missing"}), 500
+    jpeg = store.get()
+    if jpeg is None:
+        return jsonify({"success": False, "error": "No annotated frame yet"}), 404
+    return Response(jpeg, mimetype="image/jpeg")
 
 
 def _snapshot_response(event_id):

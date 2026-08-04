@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from src.backend.services.vision_contracts import VisionEvent
 
-from .snapshots import SnapshotWriter
+from .snapshots import SnapshotWriter, draw_detections
 
 
 class VisionPipeline:
@@ -21,6 +21,7 @@ class VisionPipeline:
         latency_target_ms=1000.0,
         monotonic_clock=None,
         utc_now=None,
+        annotated_frame_callback=None,
     ):
         if not isinstance(snapshot_url_prefix, str) or not snapshot_url_prefix:
             raise ValueError("snapshot_url_prefix cannot be blank")
@@ -33,7 +34,9 @@ class VisionPipeline:
         self.latency_target_ms = float(latency_target_ms)
         self._monotonic_clock = monotonic_clock or perf_counter
         self._utc_now = utc_now or (lambda: datetime.now(timezone.utc))
+        self._annotated_frame_callback = annotated_frame_callback
         self.last_timing = None
+        self.last_annotated_frame = None
 
     def process_frame(self, frame, telemetry, source_id="unknown"):
         """Run the complete CV flow for a single frame."""
@@ -45,6 +48,11 @@ class VisionPipeline:
         result = self.detector.detect(frame, source_id=source_id)
         events = []
 
+        annotated = draw_detections(frame, result.detections)
+        self.last_annotated_frame = annotated
+        if self._annotated_frame_callback is not None:
+            self._annotated_frame_callback(annotated, result.detections)
+
         for detection in result.detections:
             latitude, longitude = self.geo_locator.pixel_to_gps(
                 detection.bbox.center,
@@ -54,6 +62,9 @@ class VisionPipeline:
             snapshot_url = (
                 f"{self.snapshot_url_prefix}/{event_id}.jpg"
             )
+            latency_so_far_ms = (
+                self._monotonic_clock() - frame_received_tick
+            ) * 1000.0
             event = VisionEvent.from_detection(
                 detection,
                 latitude=latitude,
@@ -62,6 +73,7 @@ class VisionPipeline:
                 source_id=result.source_id,
                 event_id=event_id,
                 timestamp=result.timestamp,
+                processing_latency_ms=latency_so_far_ms,
             )
 
             self.snapshot_writer.save(frame, detection, event_id)
@@ -74,6 +86,17 @@ class VisionPipeline:
             self.last_timing = {
                 "frame_received_at": self._format_utc(frame_received_at),
                 "alert_created_at": self._format_utc(alert_created_at),
+                "latency_ms": latency_ms,
+                "within_target": latency_ms <= self.latency_target_ms,
+            }
+
+        if not result.detections:
+            latency_ms = (
+                self._monotonic_clock() - frame_received_tick
+            ) * 1000.0
+            self.last_timing = {
+                "frame_received_at": self._format_utc(frame_received_at),
+                "alert_created_at": self._format_utc(self._utc_now()),
                 "latency_ms": latency_ms,
                 "within_target": latency_ms <= self.latency_target_ms,
             }

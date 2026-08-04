@@ -14,6 +14,7 @@
     "latitude": {"type": "number", "minimum": -90, "maximum": 90},
     "longitude": {"type": "number", "minimum": -180, "maximum": 180},
     "snapshot_url": {"type": "string", "minLength": 1},
-    "source_id": {"type": "string", "minLength": 1}
+    "source_id": {"type": "string", "minLength": 1},
+    "processing_latency_ms": {"type": "number", "minimum": 0}
   }
 }

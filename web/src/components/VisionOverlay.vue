@@ -1,8 +1,5 @@
 <template>
-  <div
-    class="vision-overlay"
-    :style="{ aspectRatio: `${frameWidth} / ${frameHeight}` }"
-  >
+  <div class="vision-overlay">
     <!-- MJPEG (Gazebo relay) uses <img>; file/RTSP preview can use <video> -->
     <img
       v-if="videoSrc && isMjpeg"
@@ -27,7 +24,7 @@
     <svg
       class="detection-layer"
       :viewBox="`0 0 ${frameWidth} ${frameHeight}`"
-      preserveAspectRatio="xMidYMid meet"
+      preserveAspectRatio="xMidYMid slice"
       aria-label="Vision detections"
     >
       <g v-for="detection in validDetections" :key="detection.key">
@@ -121,6 +118,7 @@ export default {
 .vision-overlay {
   position: relative;
   width: 100%;
+  height: 100%;
   min-height: 120px;
   overflow: hidden;
   border-radius: 6px;
@@ -136,7 +134,11 @@ export default {
   height: 100%;
 }
 
-.vision-video { object-fit: contain; background: #020617; }
+.vision-video {
+  object-fit: cover;
+  object-position: center;
+  background: #020617;
+}
 .detection-layer { pointer-events: none; }
 
 .stream-placeholder {

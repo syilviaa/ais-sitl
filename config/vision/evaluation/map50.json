@@ -1,0 +1,28 @@
+{
+  "iou_threshold": 0.5,
+  "per_class": {
+    "Person": {
+      "ground_truths": 3,
+      "predictions": 13,
+      "ap50": 1.0
+    },
+    "Car": {
+      "ground_truths": 6,
+      "predictions": 12,
+      "ap50": 1.0
+    },
+    "Truck_Machinery": {
+      "ground_truths": 0,
+      "predictions": 0,
+      "ap50": null
+    }
+  },
+  "map50": 1.0,
+  "timestamp": "2026-08-04T15:18:56.154Z",
+  "images_dir": "config/vision/evaluation/images",
+  "labels_dir": "config/vision/evaluation/labels",
+  "model": "/tmp/ais-cv-models/yolov8n.pt",
+  "device": "cpu",
+  "image_count": 3,
+  "evaluation_confidence_floor": 0.001
+}

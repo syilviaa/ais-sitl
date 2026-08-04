@@ -89,15 +89,25 @@ npm --prefix web install
 npm --prefix web run dev
 ```
 
-Open `http://localhost:5173` in a browser.
+Open `http://localhost:5173` in a browser. The video pane defaults to the
+CV-annotated MJPEG stream at `/api/vision/mjpeg` (boxes on frames).
 
-Terminal 3 — local 1080p CV pipeline:
+Terminal 3 — TZ acceptance / local pipeline:
 
 ```bash
-source .venv-cv/bin/activate
+python scripts/run_tz_acceptance.py \
+  --source /path/to/drone.mp4 \
+  --model /path/to/yolov8n.pt \
+  --backend-url http://127.0.0.1:5001 \
+  --output-video /tmp/ais-cv-models/tz_fpv_boxed.mp4
+```
+
+Or the lighter publisher:
+
+```bash
 python scripts/run_cv_pipeline.py \
-  --source /private/tmp/ais-cv-models/demo1080p.mp4 \
-  --model /private/tmp/ais-cv-models/yolov8n.pt \
+  --source /path/to/drone.mp4 \
+  --model /path/to/yolov8n.pt \
   --telemetry config/vision/fixtures/telemetry_valid.json \
   --backend-url http://127.0.0.1:5001 \
   --device cpu \
