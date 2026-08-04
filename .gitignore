@@ -33,6 +33,9 @@ htmlcov/
 logs/
 *.log
 
+# Local database
+ais_sitl.db
+
 # Docker
 .docker/
 docker-compose.override.yml

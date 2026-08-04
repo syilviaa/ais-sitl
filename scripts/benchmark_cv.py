@@ -40,7 +40,14 @@ def calculate_fps(processed_frames, elapsed_seconds):
     return processed_frames / elapsed_seconds
 
 
-def run_benchmark(source, model_path, max_frames, device, confidence=0.65):
+def run_benchmark(
+    source,
+    model_path,
+    max_frames,
+    device,
+    confidence=0.65,
+    warmup_frames=1,
+):
     """Run detector inference without sleeping or playback throttling."""
     import cv2
 
@@ -52,6 +59,8 @@ def run_benchmark(source, model_path, max_frames, device, confidence=0.65):
         raise FileNotFoundError(f"YOLO model not found: {model_file}")
     if max_frames <= 0:
         raise ValueError("max_frames must be positive")
+    if warmup_frames < 0:
+        raise ValueError("warmup_frames cannot be negative")
 
     selected_device = detect_device(device)
     load_started = perf_counter()
@@ -67,6 +76,17 @@ def run_benchmark(source, model_path, max_frames, device, confidence=0.65):
 
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    warmed_frames = 0
+    warmup_started = perf_counter()
+    while warmed_frames < warmup_frames:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        detector.warmup(frame)
+        warmed_frames += 1
+    warmup_seconds = perf_counter() - warmup_started
+    capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
     processed_frames = 0
     total_detections = 0
     benchmark_started = perf_counter()
@@ -99,9 +119,12 @@ def run_benchmark(source, model_path, max_frames, device, confidence=0.65):
         "frame_width": width,
         "frame_height": height,
         "requested_max_frames": max_frames,
+        "requested_warmup_frames": warmup_frames,
+        "warmed_frames": warmed_frames,
         "processed_frames": processed_frames,
         "total_detections": total_detections,
         "model_load_seconds": round(model_load_seconds, 4),
+        "warmup_seconds": round(warmup_seconds, 4),
         "elapsed_seconds": round(elapsed_seconds, 4),
         "average_fps": round(
             calculate_fps(processed_frames, elapsed_seconds), 2
@@ -120,6 +143,12 @@ def build_parser():
         help="auto, cpu, mps or CUDA device such as 0",
     )
     parser.add_argument("--confidence", type=float, default=0.65)
+    parser.add_argument(
+        "--warmup-frames",
+        type=int,
+        default=1,
+        help="Inference frames excluded from FPS measurement",
+    )
     parser.add_argument("--output", help="Optional JSON report path")
     return parser
 
@@ -132,6 +161,7 @@ def main():
         max_frames=args.max_frames,
         device=args.device,
         confidence=args.confidence,
+        warmup_frames=args.warmup_frames,
     )
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     print(rendered)

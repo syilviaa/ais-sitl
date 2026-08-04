@@ -106,6 +106,22 @@ def test_pipeline_returns_no_events_for_empty_detection(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_pipeline_rejects_missing_telemetry_before_detection(tmp_path):
+    detector = FakeDetector([])
+    pipeline = VisionPipeline(
+        detector=detector,
+        geo_locator=FakeGeoLocator(),
+        snapshot_dir=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="Telemetry cannot be None"):
+        pipeline.process_frame(
+            np.zeros((100, 200, 3), dtype=np.uint8),
+            None,
+            "missing-telemetry.mp4",
+        )
+
+
 def test_pipeline_uses_real_geo_calculator(tmp_path):
     frame = np.zeros((100, 200, 3), dtype=np.uint8)
     center_detection = Detection(

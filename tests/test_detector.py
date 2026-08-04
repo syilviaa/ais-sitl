@@ -87,6 +87,17 @@ def test_empty_backend_result_returns_empty_detection_list():
     assert result.frame_height == 1080
 
 
+def test_warmup_runs_backend_without_creating_working_result():
+    frame = FakeFrame()
+    backend = FakeBackend([raw_detection(0, 0.90)])
+    detector = VisionDetector(backend=backend)
+
+    result = detector.warmup(frame)
+
+    assert result is None
+    assert backend.received_frames == [frame]
+
+
 def test_none_frame_is_rejected_before_backend_call():
     backend = FakeBackend([])
 

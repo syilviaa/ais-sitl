@@ -37,6 +37,8 @@ class VisionPipeline:
 
     def process_frame(self, frame, telemetry, source_id="unknown"):
         """Run the complete CV flow for a single frame."""
+        if telemetry is None:
+            raise ValueError("Telemetry cannot be None")
         self.last_timing = None
         frame_received_at = self._utc_now()
         frame_received_tick = self._monotonic_clock()

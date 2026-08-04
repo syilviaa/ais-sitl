@@ -83,3 +83,22 @@ def test_snapshot_writer_requires_uuid_event_id(tmp_path):
 
     with pytest.raises(ValueError, match="UUID"):
         SnapshotWriter(tmp_path).save(frame, detection, "not-a-uuid")
+
+
+def test_snapshot_writer_reports_unavailable_storage(tmp_path, monkeypatch):
+    import cv2
+
+    frame = np.zeros((20, 20, 3), dtype=np.uint8)
+    detection = Detection(
+        class_name=VisionClass.PERSON,
+        confidence=0.90,
+        bbox=BoundingBox(1, 1, 10, 10),
+    )
+    monkeypatch.setattr(cv2, "imwrite", lambda *args, **kwargs: False)
+
+    with pytest.raises(RuntimeError, match="Cannot write snapshot"):
+        SnapshotWriter(tmp_path).save(
+            frame,
+            detection,
+            "123e4567-e89b-12d3-a456-426614174002",
+        )

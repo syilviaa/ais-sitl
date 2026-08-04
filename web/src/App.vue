@@ -2,12 +2,23 @@
   <div id="app" class="dashboard">
     <header class="navbar">
       <div class="navbar-brand">
-        <h1>🚁 AIS SITL — Astana Training Field</h1>
-        <span class="subtitle">Territory Intelligence Dashboard · KZ</span>
+        <h1>AIS SITL — Учебный полигон Астана</h1>
+      </div>
+      <div class="navbar-telemetry">
+        <span class="chip" :class="getBatteryClass(telemetry.battery)">
+          Бат {{ (telemetry.battery || 0).toFixed(0) }}%
+        </span>
+        <span class="chip">{{ modeLabel }}</span>
+        <span class="chip" :class="telemetry.armed ? 'warn' : 'ok'">
+          {{ telemetry.armed ? 'Моторы ВКЛ' : 'Моторы ВЫКЛ' }}
+        </span>
+        <span class="chip" :class="failsafe.running ? 'ok' : 'muted'">
+          Failsafe {{ failsafe.running ? 'OK' : '—' }}
+        </span>
       </div>
       <div class="navbar-status">
         <span :class="['status-badge', apiConnected ? 'connected' : 'disconnected']">
-          API {{ apiConnected ? 'OK' : 'OFF' }}
+          API {{ apiConnected ? 'ОК' : 'ВЫКЛ' }}
         </span>
         <span :class="['status-badge', wsStatusClass]">
           WS {{ wsStatusLabel }}
@@ -30,123 +41,108 @@
       </section>
 
       <aside class="control-panel">
-        <!-- Flight Control -->
         <section class="panel flight-panel">
-          <h2>🎮 Flight Control</h2>
-          <div class="flight-actions">
-            <button
-              @click="initializeDrone"
-              class="btn btn-secondary btn-block"
-              :disabled="droneReady"
-            >
-              {{ droneReady ? '✅ Initialized' : '🔌 Initialize SITL' }}
-            </button>
-            <div class="btn-row">
-              <button @click="droneTakeoff" class="btn btn-primary" :disabled="!droneReady">🛫 Takeoff</button>
-              <button @click="droneHold" class="btn btn-secondary" :disabled="!droneReady">⏸ Hold</button>
-            </div>
-            <div class="btn-row">
-              <button @click="droneLand" class="btn btn-secondary" :disabled="!droneReady">🛬 Land</button>
-              <button @click="droneRtl" class="btn btn-danger" :disabled="!droneReady">🏠 RTL</button>
-            </div>
+          <h2>Управление</h2>
+          <button
+            @click="initializeDrone"
+            class="btn btn-secondary btn-block"
+            :disabled="droneReady"
+          >
+            {{ droneReady ? 'Подключено' : 'Подключить SITL' }}
+          </button>
+          <div class="btn-grid four">
+            <button @click="droneTakeoff" class="btn btn-primary" :disabled="!droneReady">Взлёт</button>
+            <button @click="droneHold" class="btn btn-secondary" :disabled="!droneReady">Удержание</button>
+            <button @click="droneLand" class="btn btn-secondary" :disabled="!droneReady">Посадка</button>
+            <button @click="droneRtl" class="btn btn-danger" :disabled="!droneReady">Домой</button>
           </div>
         </section>
 
-        <!-- Mission -->
         <section class="panel mission-panel">
-          <h2>✈️ Mission</h2>
-          <div class="mission-tools">
+          <h2>Миссия</h2>
+          <div class="mission-row">
             <button
               @click="planMode = !planMode"
-              :class="['btn', planMode ? 'btn-primary' : 'btn-secondary', 'btn-block']"
+              :class="['btn', planMode ? 'btn-primary' : 'btn-secondary']"
             >
-              {{ planMode ? '📍 Plan mode — click map' : '🗺️ Enable planning' }}
+              {{ planMode ? 'План: клик на карте' : 'Планирование' }}
+            </button>
+            <span v-if="waypoints.length" class="wp-summary">{{ waypoints.length }} точек</span>
+            <button
+              v-if="waypoints.length && planMode"
+              @click="clearWaypoints"
+              class="btn btn-secondary btn-sm"
+            >
+              Очистить
             </button>
           </div>
-
-          <ul v-if="waypoints.length" class="wp-list">
-            <li v-for="(wp, i) in waypoints" :key="i">
-              <span>WP{{ i + 1 }} — {{ wp.lat.toFixed(4) }}, {{ wp.lon.toFixed(4) }} · {{ wp.altitude }}m</span>
-              <button v-if="planMode" class="btn-icon" @click="removeWaypoint(i)" title="Remove">✕</button>
-            </li>
-          </ul>
-          <button
-            v-if="waypoints.length"
-            @click="clearWaypoints"
-            class="btn btn-secondary btn-block"
-          >
-            🗑 Clear ({{ waypoints.length }})
-          </button>
-
-          <div v-if="missionBlockReason" class="nfz-block">
-            ⛔ {{ missionBlockReason }}
+          <div class="speed-row">
+            <label for="cruise-speed">Скорость</label>
+            <input
+              id="cruise-speed"
+              v-model.number="cruiseSpeed"
+              type="range"
+              min="3"
+              max="18"
+              step="1"
+            />
+            <span class="speed-value">{{ cruiseSpeed }} м/с</span>
+            <button @click="applyFlightSpeed" class="btn btn-secondary btn-sm" :disabled="!droneReady">
+              Применить
+            </button>
           </div>
-
-          <div class="mission-actions-grid">
-            <button @click="validateMission" class="btn btn-secondary">✓ Validate</button>
-            <button @click="uploadMission" class="btn btn-primary" :disabled="!missionValid">📤 Upload</button>
+          <div class="speed-row">
+            <label for="wp-altitude">Высота точек</label>
+            <input
+              id="wp-altitude"
+              v-model.number="waypointAltitude"
+              type="range"
+              min="10"
+              max="120"
+              step="5"
+            />
+            <span class="speed-value">{{ waypointAltitude }} м</span>
           </div>
-          <button @click="exportPlan" class="btn btn-secondary btn-block">💾 Export .plan</button>
-
+          <div v-if="missionBlockReason" class="nfz-block">{{ missionBlockReason }}</div>
+          <div class="btn-grid three">
+            <button @click="validateMission" class="btn btn-secondary">Проверить</button>
+            <button @click="uploadMission" class="btn btn-primary" :disabled="!missionValid">Загрузить</button>
+            <button @click="exportPlan" class="btn btn-secondary">Экспорт</button>
+          </div>
           <div v-if="missionUploaded" class="mission-active">
-            <div class="mission-actions-grid four">
-              <button @click="startMission" :disabled="missionRunning" class="btn btn-primary">▶ Start</button>
-              <button @click="pauseMission" :disabled="!missionRunning" class="btn btn-secondary">⏸ Pause</button>
-              <button @click="resumeMission" :disabled="missionRunning" class="btn btn-secondary">▶ Resume</button>
-              <button @click="abortMission" class="btn btn-danger">⏹ Abort</button>
+            <div class="btn-grid four">
+              <button @click="startMission" :disabled="missionRunning" class="btn btn-primary">Старт</button>
+              <button @click="pauseMission" :disabled="!missionRunning" class="btn btn-secondary">Пауза</button>
+              <button @click="resumeMission" :disabled="missionRunning" class="btn btn-secondary">Далее</button>
+              <button @click="abortMission" class="btn btn-danger">Стоп</button>
             </div>
             <div class="mission-progress" v-if="missionProgress.total > 0">
-              <p>Waypoint {{ missionProgress.current }} / {{ missionProgress.total }}</p>
               <div class="progress-bar">
                 <div class="progress-fill" :style="{ width: missionProgress.percent + '%' }"></div>
               </div>
-              <p>{{ missionProgress.percent.toFixed(0) }}%</p>
+              <span class="progress-text">
+                {{ missionProgress.current }}/{{ missionProgress.total }} · {{ missionProgress.percent.toFixed(0) }}%
+              </span>
             </div>
           </div>
         </section>
 
-        <!-- Safety -->
-        <section class="panel safety-panel">
-          <h2>🛡 Safety</h2>
-          <div class="safety-grid">
-            <div class="safety-item">
-              <label>Battery</label>
-              <span :class="getBatteryClass(telemetry.battery)">{{ (telemetry.battery || 0).toFixed(0) }}%</span>
-            </div>
-            <div class="safety-item">
-              <label>Connection</label>
-              <span :class="wsStatusClass">{{ wsStatusLabel }}</span>
-            </div>
-            <div class="safety-item">
-              <label>Armed</label>
-              <span :class="telemetry.armed ? 'warn' : 'ok'">{{ telemetry.armed ? 'ARMED' : 'Disarmed' }}</span>
-            </div>
-            <div class="safety-item">
-              <label>Mode</label>
-              <span>{{ telemetry.mode || 'UNKNOWN' }}</span>
-            </div>
-            <div class="safety-item">
-              <label>Failsafe</label>
-              <span :class="failsafe.running ? 'ok' : 'warn'">{{ failsafe.running ? 'Active' : 'Idle' }}</span>
-            </div>
-            <div class="safety-item">
-              <label>RTL reason</label>
-              <span>{{ rtlReason || '—' }}</span>
-            </div>
-          </div>
-        </section>
-
-        <!-- Computer vision -->
         <section class="panel video-panel">
-          <h2>📹 Computer Vision</h2>
-          <VisionOverlay
-            :video-src="vision.videoSrc"
-            :detections="vision.detections"
-            :frame-width="vision.frameWidth"
-            :frame-height="vision.frameHeight"
-            :stream-status="vision.streamStatus"
+          <h2>Видео</h2>
+          <VideoStream
+            class="compact-video"
+            :telemetry="telemetry"
+            :active="droneReady && wsStatus === 'connected'"
+            :api-base="API_BASE"
           />
-          <div class="vision-panel-shell">
+          <div class="cv-runtime">
+            <VisionOverlay
+              :video-src="vision.videoSrc"
+              :detections="vision.detections"
+              :frame-width="vision.frameWidth"
+              :frame-height="vision.frameHeight"
+              :stream-status="vision.streamStatus"
+            />
             <VisionPanel
               :camera-status="vision.cameraStatus"
               :model-status="vision.modelStatus"
@@ -155,16 +151,16 @@
               :fps="vision.fps"
               :latency-ms="vision.latencyMs"
             />
+            <VisionAlertsPanel />
           </div>
         </section>
 
-        <!-- Events -->
         <section class="panel event-panel">
-          <h2>📋 Events</h2>
+          <h2>Журнал</h2>
           <div class="event-list">
-            <div v-if="events.length === 0" class="empty-state"><small>No events yet</small></div>
+            <div v-if="events.length === 0" class="empty-state"><small>Событий нет</small></div>
             <div
-              v-for="(event, idx) in events.slice(-8).reverse()"
+              v-for="(event, idx) in events.slice(-4).reverse()"
               :key="idx"
               class="event-item"
               :class="event.type"
@@ -181,9 +177,10 @@
 
 <script>
 import MapComponent from './components/MapComponent.vue'
+import VideoStream from './components/VideoStream.vue'
 import VisionOverlay from './components/VisionOverlay.vue'
 import VisionPanel from './components/VisionPanel.vue'
-import { DEFAULT_WAYPOINTS } from './config/trainingZone.js'
+import VisionAlertsPanel from './components/VisionAlertsPanel.vue'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
 import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
 
@@ -195,7 +192,13 @@ const API_BASE = import.meta.env.VITE_API_URL
 
 export default {
   name: 'App',
-  components: { MapComponent, VisionOverlay, VisionPanel },
+  components: {
+    MapComponent,
+    VideoStream,
+    VisionOverlay,
+    VisionPanel,
+    VisionAlertsPanel,
+  },
   data() {
     return {
       apiConnected: false,
@@ -219,10 +222,12 @@ export default {
       },
       missionValid: false,
       missionUploaded: false,
+      cruiseSpeed: 15,
+      waypointAltitude: 50,
       missionRunning: false,
       missionBlockReason: null,
       missionProgress: { current: 0, total: 0, percent: 0 },
-      waypoints: DEFAULT_WAYPOINTS.map((wp) => ({ ...wp })),
+      waypoints: [],
       failsafe: { running: false, battery_warning: false, battery_critical: false },
       rtlReason: null,
       events: [],
@@ -248,12 +253,35 @@ export default {
   computed: {
     wsStatusLabel() {
       const map = {
-        connected: 'LIVE',
-        reconnecting: 'RECONN',
-        error: 'ERROR',
-        disconnected: 'OFF',
+        connected: 'ЭФИР',
+        reconnecting: 'ПОДКЛ',
+        error: 'ОШИБКА',
+        disconnected: 'ВЫКЛ',
       }
       return map[this.wsStatus] || this.wsStatus.toUpperCase()
+    },
+    modeLabel() {
+      const modes = {
+        hold: 'Удержание',
+        manual: 'Ручной',
+        auto: 'Авто',
+        rtl: 'Домой',
+        land: 'Посадка',
+        takeoff: 'Взлёт',
+        UNKNOWN: '—',
+      }
+      const m = (this.telemetry.mode || 'UNKNOWN').toLowerCase()
+      return modes[m] || this.telemetry.mode || '—'
+    },
+    rtlReasonLabel() {
+      if (!this.rtlReason) return '—'
+      const map = {
+        operator_request: 'Команда оператора',
+        battery_low: 'Низкий заряд',
+        link_loss: 'Потеря связи',
+        nfz_breach: 'Зона NFZ',
+      }
+      return map[this.rtlReason] || this.rtlReason
     },
     wsStatusClass() {
       if (this.wsStatus === 'connected') return 'connected'
@@ -263,7 +291,7 @@ export default {
     },
   },
   mounted() {
-    this.addEvent('system', 'Astana Training Field dashboard loaded')
+    this.addEvent('system', 'Панель загружена — полигон Астана')
     this.loadNfzZones()
     this.initializeBackend()
     this.unsubTelemetry = onTelemetry((t) => {
@@ -285,7 +313,6 @@ export default {
     if (this.progressInterval) clearInterval(this.progressInterval)
   },
   methods: {
-    /** REST fallback when WebSocket is offline */
     startRestFallback() {
       this.restFallbackInterval = setInterval(async () => {
         if (this.wsStatus === 'connected') return
@@ -321,10 +348,10 @@ export default {
         const response = await fetch(`${API_BASE}/geofence/geojson`)
         if (response.ok) {
           this.nfzGeoJson = await response.json()
-          this.addEvent('info', `NFZ zones: ${this.nfzGeoJson.features?.length || 0}`)
+          this.addEvent('info', `Зоны NFZ: ${this.nfzGeoJson.features?.length || 0}`)
         }
       } catch {
-        this.addEvent('warning', 'NFZ GeoJSON unavailable — using local config')
+        this.addEvent('warning', 'NFZ недоступен — локальный config')
         const local = await fetch('/config/nfz_zones.geojson').catch(() => null)
         if (local?.ok) this.nfzGeoJson = await local.json()
       }
@@ -333,39 +360,40 @@ export default {
       try {
         const response = await fetch(`${API_BASE}/health`)
         this.apiConnected = response.ok
-        if (response.ok) this.addEvent('success', 'API connected')
+        if (response.ok) this.addEvent('success', 'API подключён')
       } catch (e) {
         this.addEvent('error', `API: ${e.message}`)
       }
     },
     async initializeDrone() {
       try {
-        this.addEvent('info', 'Initializing SITL...')
-        let response = await fetch(`${API_BASE}/drone/initialize`, {
+        this.addEvent('info', 'Подключение к SITL...')
+        const response = await fetch(`${API_BASE}/drone/initialize`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ port: 14540, sitl_port: 14580 }),
         })
-        let data = await response.json()
-        if (!data.success) {
-          this.addEvent(
-            'error',
-            (data.hint || data.error || 'Init failed') +
-              ' — run ./scripts/start-px4-sitl.sh'
-          )
-          return
+        const data = await response.json()
+        if (data.success) {
+          const readyRes = await fetch(`${API_BASE}/drone/wait-ready`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ timeout: 45 }),
+          })
+          const ready = await readyRes.json().catch(() => ({}))
+          this.droneReady = true
+          requestTelemetryStart()
+          if (ready.success) {
+            this.addEvent('success', 'SITL готов — дом Astana')
+          } else {
+            this.addEvent('warning', `SITL подключён, но не готов: ${ready.error || 'GPS/home'}`)
+          }
+          if (this.$refs.mapComponent) this.$refs.mapComponent.clearTrail()
+        } else {
+          this.addEvent('error', (data.hint || data.error || 'Ошибка подключения') + ' — ./scripts/start-px4-sitl.sh')
         }
-        await fetch(`${API_BASE}/drone/wait-ready`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ timeout: 30 }),
-        })
-        this.droneReady = true
-        requestTelemetryStart()
-        this.addEvent('success', 'SITL ready — Astana home')
-        if (this.$refs.mapComponent) this.$refs.mapComponent.clearTrail()
       } catch (e) {
-        this.addEvent('error', `Init: ${e.message}`)
+        this.addEvent('error', `Подключение: ${e.message}`)
       }
     },
     async droneTakeoff() {
@@ -375,25 +403,31 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ altitude: 50 }),
         })
-        if (response.ok) this.addEvent('success', 'Takeoff 50m')
+        const data = await response.json().catch(() => ({}))
+        if (response.ok) this.addEvent('success', 'Взлёт 50 м')
+        else this.addEvent('error', data.error || 'Взлёт не выполнен')
       } catch (e) {
-        this.addEvent('error', `Takeoff: ${e.message}`)
+        this.addEvent('error', `Взлёт: ${e.message}`)
       }
     },
     async droneHold() {
       try {
         const response = await fetch(`${API_BASE}/drone/hold`, { method: 'POST' })
-        if (response.ok) this.addEvent('info', 'Hold position')
+        const data = await response.json().catch(() => ({}))
+        if (response.ok) this.addEvent('info', 'Удержание позиции')
+        else this.addEvent('error', data.error || 'Удержание не выполнено')
       } catch (e) {
-        this.addEvent('error', `Hold: ${e.message}`)
+        this.addEvent('error', `Удержание: ${e.message}`)
       }
     },
     async droneLand() {
       try {
         const response = await fetch(`${API_BASE}/drone/land`, { method: 'POST' })
-        if (response.ok) this.addEvent('success', 'Landing')
+        const data = await response.json().catch(() => ({}))
+        if (response.ok) this.addEvent('success', 'Посадка')
+        else this.addEvent('error', data.error || 'Посадка не выполнена')
       } catch (e) {
-        this.addEvent('error', `Land: ${e.message}`)
+        this.addEvent('error', `Посадка: ${e.message}`)
       }
     },
     async droneRtl() {
@@ -403,20 +437,23 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reason: 'operator_request' }),
         })
+        const data = await response.json().catch(() => ({}))
         if (response.ok) {
           this.rtlReason = 'operator_request'
-          this.addEvent('warning', 'RTL initiated')
+          this.addEvent('warning', data.message || 'RTL — возврат домой')
+        } else {
+          this.addEvent('error', data.error || 'RTL не выполнен')
         }
       } catch (e) {
         this.addEvent('error', `RTL: ${e.message}`)
       }
     },
     addWaypoint(wp) {
-      this.waypoints.push({ ...wp, altitude: wp.altitude || 50 })
+      this.waypoints.push({ ...wp, altitude: this.waypointAltitude })
       this.missionUploaded = false
       this.missionValid = false
       this.missionBlockReason = null
-      this.addEvent('info', `WP${this.waypoints.length} added`)
+      this.addEvent('info', `Точка ${this.waypoints.length} добавлена`)
     },
     moveWaypoint({ index, lat, lon }) {
       if (this.waypoints[index]) {
@@ -424,7 +461,7 @@ export default {
         this.missionUploaded = false
         this.missionValid = false
         this.missionBlockReason = null
-        this.addEvent('info', `WP${index + 1} moved`)
+        this.addEvent('info', `Точка ${index + 1} перемещена`)
       }
     },
     removeWaypoint(index) {
@@ -432,23 +469,23 @@ export default {
       this.missionUploaded = false
       this.missionValid = false
       this.missionBlockReason = null
-      this.addEvent('info', `WP${index + 1} removed`)
+      this.addEvent('info', `Точка ${index + 1} удалена`)
     },
     clearWaypoints() {
       this.waypoints = []
       this.missionUploaded = false
       this.missionValid = false
       this.missionBlockReason = null
-      this.addEvent('info', 'Waypoints cleared')
+      this.addEvent('info', 'Маршрут очищен')
     },
     async validateMission() {
       if (this.waypoints.length < 2) {
-        this.missionBlockReason = 'Need at least 2 waypoints'
+        this.missionBlockReason = 'Нужно минимум 2 точки'
         this.missionValid = false
         return
       }
       try {
-        this.addEvent('info', 'Validating mission (NFZ)...')
+        this.addEvent('info', 'Проверка маршрута (NFZ)...')
         const response = await fetch(`${API_BASE}/mission/validate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -458,12 +495,12 @@ export default {
         if (data.valid) {
           this.missionValid = true
           this.missionBlockReason = null
-          this.addEvent('success', `Valid — ${data.waypoints_count} WPs`)
+          this.addEvent('success', `OK — ${data.waypoints_count} точек`)
         } else {
           this.missionValid = false
           this.missionBlockReason = data.nfz_blocked
-            ? `Blocked by NFZ: ${data.error || 'No-Fly Zone'}`
-            : (data.error || 'Validation failed')
+            ? `Заблокировано NFZ: ${data.error || 'запретная зона'}`
+            : (data.error || 'Ошибка проверки')
           this.addEvent('error', this.missionBlockReason)
         }
       } catch (e) {
@@ -478,16 +515,16 @@ export default {
         if (!this.missionValid) return
       }
       try {
-        this.addEvent('info', 'Uploading mission...')
+        this.addEvent('info', 'Загрузка маршрута...')
         const response = await fetch(`${API_BASE}/mission/upload`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ waypoints: this.waypoints }),
+          body: JSON.stringify({ waypoints: this.waypoints, speed: this.cruiseSpeed }),
         })
         const data = await response.json()
         if (response.ok && data.success !== false) {
           this.missionUploaded = true
-          this.addEvent('success', `Uploaded (${data.mission_id || 'ok'})`)
+          this.addEvent('success', `Загружено (${data.mission_id || 'ok'})`)
           if (this.progressInterval) clearInterval(this.progressInterval)
           this.progressInterval = setInterval(this.updateMissionProgress, 1000)
         } else {
@@ -510,15 +547,32 @@ export default {
           const url = URL.createObjectURL(blob)
           const link = document.createElement('a')
           link.href = url
-          link.download = 'astana-mission.plan'
+          link.download = 'almaty-mission.plan'
           link.click()
           URL.revokeObjectURL(url)
-          this.addEvent('success', 'Exported .plan')
+          this.addEvent('success', 'Экспорт .plan')
         } else {
           this.addEvent('error', data.error || 'Export failed')
         }
       } catch (e) {
         this.addEvent('error', `Export: ${e.message}`)
+      }
+    },
+    async applyFlightSpeed() {
+      try {
+        const response = await fetch(`${API_BASE}/drone/flight-speed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cruise_m_s: this.cruiseSpeed }),
+        })
+        const data = await response.json()
+        if (response.ok && data.success) {
+          this.addEvent('success', `Скорость ${this.cruiseSpeed} м/с применена`)
+        } else {
+          this.addEvent('error', `Скорость: ${data.error || 'ошибка'}`)
+        }
+      } catch (e) {
+        this.addEvent('error', `Скорость: ${e.message}`)
       }
     },
     async startMission() {
@@ -603,28 +657,54 @@ export default {
   flex-direction: column;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: #f0f4f8;
+  overflow: hidden;
 }
 
 .navbar {
   background: linear-gradient(135deg, #1e40af 0%, #0369a1 100%);
   color: white;
-  padding: 0.75rem 1.5rem;
+  padding: 0.45rem 1rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 0.75rem;
   box-shadow: 0 2px 6px rgba(0,0,0,.12);
+  flex-shrink: 0;
 }
 
-.navbar-brand h1 { font-size: 1.25rem; font-weight: 700; }
-.subtitle { font-size: 0.72rem; opacity: 0.85; margin-left: 0.5rem; }
+.navbar-brand h1 { font-size: 1.05rem; font-weight: 700; white-space: nowrap; }
 
-.navbar-status { display: flex; gap: 0.5rem; }
+.navbar-telemetry {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  flex: 1;
+}
+
+.chip {
+  padding: 0.2rem 0.5rem;
+  border-radius: 12px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: rgba(255,255,255,.15);
+  font-family: monospace;
+}
+
+.chip.good { background: rgba(34,197,94,.3); }
+.chip.warning { background: rgba(245,158,11,.35); }
+.chip.critical { background: rgba(239,68,68,.35); }
+.chip.ok { background: rgba(34,197,94,.25); }
+.chip.warn { background: rgba(245,158,11,.35); }
+.chip.muted { opacity: 0.7; }
+
+.navbar-status { display: flex; gap: 0.35rem; flex-shrink: 0; }
 
 .status-badge {
-  padding: 0.35rem 0.75rem;
-  border-radius: 16px;
+  padding: 0.25rem 0.55rem;
+  border-radius: 12px;
   font-weight: 700;
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   letter-spacing: 0.03em;
 }
 
@@ -635,13 +715,15 @@ export default {
 .container {
   display: flex;
   flex: 1;
-  gap: 0.75rem;
-  padding: 0.75rem;
+  gap: 0.5rem;
+  padding: 0.5rem;
   overflow: hidden;
+  min-height: 0;
 }
 
 .map-panel {
   flex: 1;
+  min-width: 0;
   background: #fff;
   border-radius: 8px;
   overflow: hidden;
@@ -649,105 +731,121 @@ export default {
 }
 
 .control-panel {
-  width: 340px;
-  display: flex;
-  flex-direction: column;
-  gap: 0.65rem;
-  overflow-y: auto;
-  padding-right: 4px;
+  width: 400px;
+  flex-shrink: 0;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 0.4rem;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .panel {
   background: #fff;
   border-radius: 8px;
-  padding: 1rem;
+  padding: 0.55rem 0.65rem;
   box-shadow: 0 1px 4px rgba(0,0,0,.08);
 }
 
 .panel h2 {
-  font-size: 0.95rem;
-  margin-bottom: 0.75rem;
+  font-size: 0.78rem;
+  margin-bottom: 0.4rem;
   font-weight: 700;
-  color: #1e293b;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
-.flight-actions { display: flex; flex-direction: column; gap: 0.45rem; }
+.btn-grid {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.35rem;
+}
 
-.btn-row { display: flex; gap: 0.4rem; }
-.btn-row .btn { flex: 1; font-size: 0.78rem; }
+.btn-grid.four { grid-template-columns: repeat(4, 1fr); }
+.btn-grid.three { grid-template-columns: repeat(3, 1fr); }
 
 .btn {
-  padding: 0.45rem 0.6rem;
+  padding: 0.35rem 0.4rem;
   border: none;
-  border-radius: 6px;
+  border-radius: 5px;
   font-weight: 600;
   cursor: pointer;
-  font-size: 0.82rem;
+  font-size: 0.72rem;
   transition: opacity 0.15s;
 }
+
+.btn-sm { padding: 0.25rem 0.45rem; font-size: 0.68rem; }
 
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn-primary { background: #2563eb; color: #fff; }
 .btn-secondary { background: #e2e8f0; color: #1e293b; }
 .btn-danger { background: #dc2626; color: #fff; }
-.btn-block { width: 100%; margin-top: 0.35rem; }
+.btn-block { width: 100%; margin-top: 0.3rem; }
 
-.mission-tools { margin-bottom: 0.5rem; }
-
-.wp-list {
-  list-style: none;
-  font-size: 0.72rem;
-  margin: 0.5rem 0;
-  max-height: 100px;
-  overflow-y: auto;
-}
-
-.wp-list li {
+.mission-row {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 3px 0;
-  border-bottom: 1px solid #f1f5f9;
-  font-family: monospace;
+  gap: 0.35rem;
+  flex-wrap: wrap;
 }
 
-.btn-icon {
-  background: none;
-  border: none;
-  color: #dc2626;
-  cursor: pointer;
-  font-size: 0.85rem;
-  padding: 0 4px;
+.mission-row .btn { flex: 1; min-width: 0; }
+
+.speed-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+  font-size: 0.68rem;
+  color: var(--text-dim, #8fa3bf);
+}
+
+.speed-row input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent, #3ea6ff);
+}
+
+.speed-value {
+  min-width: 3.6rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text, #e6edf6);
+}
+
+.wp-summary {
+  font-size: 0.68rem;
+  color: #64748b;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .nfz-block {
   background: #fef2f2;
   border: 1px solid #fecaca;
   color: #b91c1c;
-  padding: 0.5rem;
-  border-radius: 6px;
-  font-size: 0.78rem;
-  margin: 0.5rem 0;
+  padding: 0.3rem 0.45rem;
+  border-radius: 5px;
+  font-size: 0.68rem;
+  margin-top: 0.35rem;
 }
 
-.mission-actions-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.mission-active { margin-top: 0.35rem; }
+
+.mission-progress {
+  display: flex;
+  align-items: center;
   gap: 0.4rem;
-  margin-top: 0.5rem;
+  margin-top: 0.3rem;
 }
-
-.mission-actions-grid.four { grid-template-columns: 1fr 1fr; }
-
-.mission-progress { font-size: 0.82rem; margin-top: 0.5rem; color: #64748b; }
-.mission-progress p { margin-bottom: 0.3rem; }
 
 .progress-bar {
-  height: 6px;
+  flex: 1;
+  height: 5px;
   background: #e2e8f0;
   border-radius: 3px;
   overflow: hidden;
-  margin-bottom: 0.3rem;
 }
 
 .progress-fill {
@@ -756,34 +854,43 @@ export default {
   transition: width 0.3s;
 }
 
-.safety-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.5rem;
-  font-size: 0.82rem;
+.progress-text {
+  font-size: 0.65rem;
+  color: #64748b;
+  white-space: nowrap;
+  font-family: monospace;
 }
 
-.safety-item { display: flex; flex-direction: column; gap: 2px; }
-.safety-item label { font-size: 0.7rem; color: #64748b; font-weight: 600; text-transform: uppercase; }
-.safety-item span { font-weight: 700; font-family: monospace; }
-.safety-item .ok { color: #16a34a; }
-.safety-item .warn { color: #d97706; }
-.safety-item .good { color: #16a34a; }
-.safety-item .warning { color: #d97706; }
-.safety-item .critical { color: #dc2626; }
+.video-panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 
-.vision-panel-shell { margin-top: 0.75rem; }
+.video-panel :deep(.compact-video .video-wrap) {
+  aspect-ratio: unset;
+  height: 100%;
+  min-height: 80px;
+}
 
-.video-placeholder p { color: #94a3b8; font-weight: 600; font-size: 0.9rem; }
-.video-placeholder small { font-size: 0.72rem; margin-top: 4px; }
+.event-panel {
+  min-height: 0;
+  overflow: hidden;
+}
 
-.event-list { font-size: 0.78rem; max-height: 160px; overflow-y: auto; }
+.event-list {
+  font-size: 0.68rem;
+  overflow: hidden;
+}
 
 .event-item {
-  padding: 0.35rem 0.5rem;
-  margin-bottom: 0.35rem;
-  border-left: 3px solid #e2e8f0;
+  padding: 0.2rem 0.35rem;
+  margin-bottom: 0.2rem;
+  border-left: 2px solid #e2e8f0;
   background: #f8fafc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .event-item.error { border-left-color: #dc2626; }
@@ -792,6 +899,15 @@ export default {
 .event-item.success { border-left-color: #16a34a; }
 .event-item.system { border-left-color: #64748b; }
 
-.event-time { font-family: monospace; color: #94a3b8; font-size: 0.68rem; margin-right: 0.4rem; }
-.empty-state { text-align: center; color: #94a3b8; padding: 1rem; }
+.event-time { font-family: monospace; color: #94a3b8; font-size: 0.62rem; margin-right: 0.3rem; }
+.empty-state { text-align: center; color: #94a3b8; padding: 0.35rem; }
+.cv-runtime {
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  margin-top: .55rem;
+  padding-top: .55rem;
+  border-top: 1px solid #e2e8f0;
+}
+
 </style>

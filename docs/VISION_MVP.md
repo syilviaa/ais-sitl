@@ -53,8 +53,14 @@ python scripts/benchmark_cv.py \
   --source /path/to/1080p.mp4 \
   --model /path/to/yolov8n.pt \
   --max-frames 100 \
+  --warmup-frames 1 \
   --output reports/vision/benchmark.json
 ```
+
+The warm-up frames are run before the timer and never become working events.
+The fixed Day 4 CPU smoke result is stored in
+`config/vision/day4-benchmark.json` (`19.86 FPS` for 20 1080p frames after
+one cold warm-up frame).
 
 The fixed labeled dataset format and mAP command are documented in
 `config/vision/evaluation/README.md`. mAP is evaluated from low-confidence
@@ -63,3 +69,69 @@ contract still enforces the production threshold `0.65`.
 
 Do not publish an mAP value until the human-reviewed top-down and angled test
 frames contain ground truth for all three classes.
+
+## Complete local demonstration
+
+Open three terminals in the repository. On macOS the backend uses port 5001
+because AirPlay commonly occupies port 5000.
+
+Terminal 1 — backend REST and Socket.IO:
+
+```bash
+source .venv-cv/bin/activate
+python run_backend.py
+```
+
+Terminal 2 — Vue Dashboard:
+
+```bash
+npm --prefix web install
+npm --prefix web run dev
+```
+
+Open `http://localhost:5173` in a browser.
+
+Terminal 3 — local 1080p CV pipeline:
+
+```bash
+source .venv-cv/bin/activate
+python scripts/run_cv_pipeline.py \
+  --source /private/tmp/ais-cv-models/demo1080p.mp4 \
+  --model /private/tmp/ais-cv-models/yolov8n.pt \
+  --telemetry config/vision/fixtures/telemetry_valid.json \
+  --backend-url http://127.0.0.1:5001 \
+  --device cpu \
+  --max-frames 20
+```
+
+For RTSP, replace only `--source` with the provided `rtsp://...` URL. The
+pipeline warms the model with the first readable frame, processes subsequent
+frames, writes snapshots to `/private/tmp/ais-sitl-vision-snapshots`, and
+publishes canonical events to `/api/vision/events`.
+
+Verify the backend manually:
+
+```bash
+curl "http://127.0.0.1:5001/api/vision/latest?limit=2"
+curl "http://127.0.0.1:5001/api/vision/health"
+```
+
+The fixed Day 4 local E2E smoke result is stored in
+`config/vision/day4-e2e-smoke.json`: two working frames produced eight events,
+the latest REST request returned HTTP 200, event posts returned HTTP 201, and
+the measured frame-to-alert latency was 88.11 ms.
+
+## Vision API and Socket.IO
+
+- `GET /api/vision/latest?limit=10` — newest events first;
+- `GET /api/vision/events?class=Person` — event history/filter;
+- `POST /api/vision/events` — publish a validated `VisionEvent`;
+- `GET /api/vision/events/<uuid>` — one event;
+- `GET /api/vision/snapshots/<uuid>.jpg` — JPEG snapshot;
+- `GET /api/vision/errors` — non-fatal error journal;
+- `GET /api/vision/health` — service status and counts;
+- Socket.IO `vision_detection` and `vision_alert` — at most 10 events/s.
+
+The Dashboard remains usable when the vision backend, model, camera, telemetry,
+or snapshot is unavailable. Events without valid GPS are rejected instead of
+showing invented coordinates.

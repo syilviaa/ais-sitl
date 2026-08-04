@@ -2,7 +2,12 @@
 
 import pytest
 
-from scripts.benchmark_cv import calculate_fps, detect_device
+from scripts.benchmark_cv import (
+    build_parser,
+    calculate_fps,
+    detect_device,
+    run_benchmark,
+)
 
 
 def test_calculate_fps():
@@ -24,3 +29,27 @@ def test_calculate_fps_rejects_invalid_values(
 def test_explicit_device_is_preserved():
     assert detect_device("cpu") == "cpu"
     assert detect_device("mps") == "mps"
+
+
+def test_benchmark_uses_one_warmup_frame_by_default():
+    args = build_parser().parse_args([
+        "--source",
+        "demo.mp4",
+        "--model",
+        "yolov8n.pt",
+    ])
+
+    assert args.warmup_frames == 1
+
+
+def test_benchmark_rejects_missing_video_and_model(tmp_path):
+    missing_video = tmp_path / "missing.mp4"
+    missing_model = tmp_path / "missing.pt"
+
+    with pytest.raises(FileNotFoundError, match="Video source"):
+        run_benchmark(missing_video, missing_model, 1, "cpu")
+
+    fake_video = tmp_path / "video.mp4"
+    fake_video.write_bytes(b"not opened because model validation is first")
+    with pytest.raises(FileNotFoundError, match="YOLO model"):
+        run_benchmark(fake_video, missing_model, 1, "cpu")

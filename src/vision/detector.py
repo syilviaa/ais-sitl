@@ -135,6 +135,19 @@ class VisionDetector:
             detections=normalized,
         )
 
+    def warmup(self, frame):
+        """Prime the inference backend without producing a working result."""
+        if frame is None:
+            raise ValueError("Frame cannot be None")
+        shape = getattr(frame, "shape", None)
+        if not shape or len(shape) < 2:
+            raise ValueError("Frame must expose height and width in shape")
+        height, width = int(shape[0]), int(shape[1])
+        if height <= 0 or width <= 0:
+            raise ValueError("Frame dimensions must be positive")
+        list(self.backend.predict(frame))
+        return None
+
     def detect_source(self, source, max_frames=None):
         """Yield DetectorResult values from a local path or RTSP URL."""
         with OpenCVVideoSource(source) as video:

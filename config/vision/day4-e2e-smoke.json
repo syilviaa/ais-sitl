@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-08-04T09:51:52.476Z",
+  "source": "/private/tmp/ais-cv-models/demo1080p.mp4",
+  "model": "/private/tmp/ais-cv-models/yolov8n.pt",
+  "backend_url": "http://127.0.0.1:5001",
+  "processed_frames": 2,
+  "published_events": 8,
+  "last_latency_ms": 88.11075,
+  "latency_target_ms": 1000,
+  "within_target": true,
+  "rest_latest_status": 200,
+  "event_post_status": 201,
+  "snapshot_dir": "/private/tmp/ais-sitl-vision-snapshots"
+}
