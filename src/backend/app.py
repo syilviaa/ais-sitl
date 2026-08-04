@@ -105,6 +105,17 @@ def create_app(config=None):
     app.clients = set()
     app.pending_telemetry_clients = set()
 
+    # CV vision service (Мерей) — lives under src/backend, not root backend/
+    from src.backend.routes.vision import vision_bp
+    from src.backend.services.vision_service import VisionService
+    from src.backend.services.vision_socket_handler import VisionSocketHandler
+
+    app.vision_service = VisionService()
+    app.vision_socket_handler = VisionSocketHandler(rate_limit_per_sec=10)
+    app.vision_clients = {"detection": set(), "alert": set()}
+    app.register_blueprint(vision_bp)
+    logger.info("CV vision routes registered at /api/vision")
+
     def broadcast_telemetry(payload):
         """Send a collector snapshot to explicitly subscribed clients only."""
         service = app.telemetry_service
@@ -861,6 +872,8 @@ def create_app(config=None):
         app.clients.discard(client_id)
         if app.telemetry_service:
             app.telemetry_service.unregister_client(client_id)
+        app.vision_clients['detection'].discard(client_id)
+        app.vision_clients['alert'].discard(client_id)
         logger.info(
             f"Client disconnected: {client_id} (total: {len(app.clients)})"
         )
@@ -921,6 +934,32 @@ def create_app(config=None):
             socketio.start_background_task(broadcast_fleet_status)
 
         emit('fleet_monitoring_started', {'client_id': client_id})
+
+    @socketio.on('subscribe_detections')
+    def on_subscribe_detections():
+        client_id = request.sid
+        app.vision_clients['detection'].add(client_id)
+        emit('response', {'status': 'subscribed', 'event_type': 'vision_detection'})
+
+    @socketio.on('subscribe_alerts')
+    def on_subscribe_alerts():
+        client_id = request.sid
+        app.vision_clients['alert'].add(client_id)
+        emit('response', {'status': 'subscribed', 'event_type': 'vision_alert'})
+
+    def _relay_vision(event_type, payload):
+        key = 'detection' if event_type == 'vision_detection' else 'alert'
+        for sid in tuple(app.vision_clients.get(key, set())):
+            socketio.emit(event_type, payload, to=sid)
+
+    app.vision_socket_handler.subscribe(
+        'vision_detection',
+        lambda payload: _relay_vision('vision_detection', payload),
+    )
+    app.vision_socket_handler.subscribe(
+        'vision_alert',
+        lambda payload: _relay_vision('vision_alert', payload),
+    )
 
     # TODO: Mission-progress and failsafe events belong to other owners.
 

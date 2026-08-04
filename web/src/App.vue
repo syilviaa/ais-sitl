@@ -147,6 +147,8 @@
           </div>
         </section>
 
+        <VisionAlertsPanel />
+
         <!-- Events -->
         <section class="panel event-panel">
           <h2>📋 Events</h2>
@@ -170,6 +172,7 @@
 
 <script>
 import MapComponent from './components/MapComponent.vue'
+import VisionAlertsPanel from './components/VisionAlertsPanel.vue'
 import { DEFAULT_WAYPOINTS } from './config/trainingZone.js'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
 import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
@@ -182,7 +185,7 @@ const API_BASE = import.meta.env.VITE_API_URL
 
 export default {
   name: 'App',
-  components: { MapComponent },
+  components: { MapComponent, VisionAlertsPanel },
   data() {
     return {
       apiConnected: false,
