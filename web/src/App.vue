@@ -129,15 +129,9 @@
 
         <section class="panel video-panel">
           <h2>Видео</h2>
-          <VideoStream
-            class="compact-video"
-            :telemetry="telemetry"
-            :active="droneReady && wsStatus === 'connected'"
-            :api-base="API_BASE"
-          />
           <div class="cv-runtime">
             <VisionOverlay
-              :video-src="vision.videoSrc"
+              :video-src="visionVideoSrc"
               :detections="vision.detections"
               :frame-width="vision.frameWidth"
               :frame-height="vision.frameHeight"
@@ -177,12 +171,12 @@
 
 <script>
 import MapComponent from './components/MapComponent.vue'
-import VideoStream from './components/VideoStream.vue'
 import VisionOverlay from './components/VisionOverlay.vue'
 import VisionPanel from './components/VisionPanel.vue'
 import VisionAlertsPanel from './components/VisionAlertsPanel.vue'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
 import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
+import { onVisionDetection, onVisionAlert } from './services/visionSocket.js'
 
 const API_BASE = import.meta.env.VITE_API_URL
   ? `${import.meta.env.VITE_API_URL.replace(/\/$/, '')}/api`
@@ -194,7 +188,6 @@ export default {
   name: 'App',
   components: {
     MapComponent,
-    VideoStream,
     VisionOverlay,
     VisionPanel,
     VisionAlertsPanel,
@@ -242,15 +235,26 @@ export default {
         modelName: '',
         fps: null,
         latencyMs: null,
+        useMjpeg: false,
       },
       unsubTelemetry: null,
       unsubWsStatus: null,
+      unsubVisionDet: null,
+      unsubVisionAlert: null,
       restFallbackInterval: null,
       failsafeInterval: null,
       progressInterval: null,
+      visionPollInterval: null,
     }
   },
   computed: {
+    visionVideoSrc() {
+      if (this.vision.videoSrc) return this.vision.videoSrc
+      if (this.vision.useMjpeg && this.droneReady) {
+        return `${API_BASE}/video/mjpeg`
+      }
+      return ''
+    },
     wsStatusLabel() {
       const map = {
         connected: 'ЭФИР',
@@ -300,19 +304,71 @@ export default {
     this.unsubWsStatus = onConnectionStatus((s) => {
       this.wsStatus = s
     })
+    this.unsubVisionDet = onVisionDetection((event) => this.onVisionEvent(event))
+    this.unsubVisionAlert = onVisionAlert((event) => this.onVisionEvent(event))
     connectTelemetry()
     this.startRestFallback()
     this.startFailsafePolling()
+    this.startVisionPolling()
   },
   beforeUnmount() {
     if (this.unsubTelemetry) this.unsubTelemetry()
     if (this.unsubWsStatus) this.unsubWsStatus()
+    if (this.unsubVisionDet) this.unsubVisionDet()
+    if (this.unsubVisionAlert) this.unsubVisionAlert()
     disconnectTelemetry()
     if (this.restFallbackInterval) clearInterval(this.restFallbackInterval)
     if (this.failsafeInterval) clearInterval(this.failsafeInterval)
     if (this.progressInterval) clearInterval(this.progressInterval)
+    if (this.visionPollInterval) clearInterval(this.visionPollInterval)
   },
   methods: {
+    onVisionEvent(event) {
+      if (!event?.event_id) return
+      this.vision.modelStatus = 'ready'
+      this.vision.cameraStatus = 'connected'
+      this.vision.streamStatus = 'live'
+      if (!this.vision.modelName) this.vision.modelName = 'yolov8n'
+      const next = [event, ...this.vision.detections.filter((d) => d.event_id !== event.event_id)]
+      this.vision.detections = next.slice(0, 12)
+      if (event.processing_latency_ms != null) {
+        this.vision.latencyMs = Number(event.processing_latency_ms)
+      }
+    },
+    startVisionPolling() {
+      const tick = async () => {
+        try {
+          const health = await fetch(`${API_BASE}/vision/health`)
+          if (!health.ok) {
+            this.vision.modelStatus = this.vision.modelStatus === 'ready' ? 'ready' : 'missing'
+            return
+          }
+          const videoStatus = await fetch(`${API_BASE}/video/status`).catch(() => null)
+          if (videoStatus?.ok) {
+            const vs = await videoStatus.json()
+            const live = Boolean(vs.running || vs.clients > 0 || vs.gstreamer_available)
+            this.vision.useMjpeg = Boolean(vs.gstreamer_available)
+            if (live && this.droneReady) {
+              this.vision.cameraStatus = 'connected'
+              this.vision.streamStatus = 'live'
+            }
+          }
+          const latest = await fetch(`${API_BASE}/vision/latest?limit=8`)
+          if (latest.ok) {
+            const payload = await latest.json()
+            if (Array.isArray(payload.events) && payload.events.length) {
+              this.vision.detections = payload.events
+              this.vision.modelStatus = 'ready'
+              if (!this.vision.modelName) this.vision.modelName = 'yolov8n'
+            }
+          }
+        } catch {
+          /* vision offline must not break dashboard */
+        }
+      }
+      tick()
+      this.visionPollInterval = setInterval(tick, 2000)
+    },
     startRestFallback() {
       this.restFallbackInterval = setInterval(async () => {
         if (this.wsStatus === 'connected') return
@@ -734,7 +790,7 @@ export default {
   width: 400px;
   flex-shrink: 0;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto minmax(160px, 1.2fr) auto;
   gap: 0.4rem;
   overflow: hidden;
   min-height: 0;
@@ -867,10 +923,23 @@ export default {
   flex-direction: column;
 }
 
-.video-panel :deep(.compact-video .video-wrap) {
-  aspect-ratio: unset;
-  height: 100%;
-  min-height: 80px;
+.cv-runtime {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-height: 0;
+}
+
+.cv-runtime :deep(.vision-overlay) {
+  min-height: 110px;
+  max-height: 180px;
+}
+
+.cv-runtime :deep(.vision-alerts) {
+  max-height: 110px;
+  overflow-y: auto;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 0.35rem;
 }
 
 .event-panel {
@@ -901,13 +970,4 @@ export default {
 
 .event-time { font-family: monospace; color: #94a3b8; font-size: 0.62rem; margin-right: 0.3rem; }
 .empty-state { text-align: center; color: #94a3b8; padding: 0.35rem; }
-.cv-runtime {
-  display: flex;
-  flex-direction: column;
-  gap: .45rem;
-  margin-top: .55rem;
-  padding-top: .55rem;
-  border-top: 1px solid #e2e8f0;
-}
-
 </style>

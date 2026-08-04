@@ -1,24 +1,24 @@
 # CV MVP release branch
 
-**Branch:** `feat/cv-mvp-release`  
-**Target:** `main`
+**Branch:** `feat/cv-mvp-release` → merge into `main`
 
-## What’s included
-- Stable dashboard from `main` (Astana UI, video relay, SITL fixes)
-- Full CV stack from `feat/cv-zhanel-day4`:
-  - detector / pipeline / snapshots / metrics
-  - `src/backend/geo` (Pixel-to-GPS)
-  - vision REST + Socket.IO
-  - Overlay, Panel, Alerts UI
-- Merge conflict resolution for `app.py` / `App.vue` (video + CV together)
-- Snapshot dir defaults to local `./snapshots` (override with `VISION_SNAPSHOT_DIR`)
+## Frontend (reference UI)
+Astana compact dashboard:
+- Header: Бат / mode / Моторы / Failsafe / API / WS
+- Map + NFZ
+- Управление / Миссия / **Видео** (VisionOverlay + Camera/Detector/Stream) / Журнал
+- CV alerts under video statuses
 
-## Do not merge into this PR
-- Old `feat/cv-merei` with root-level `backend/` package
+Matches the Astana training-field UI with CV statuses under the video pane.
+
+## Backend
+- `src/backend/*` + `src/vision/*` + `src/backend/geo/*`
+- REST `/api/vision`, Socket.IO alerts ≤10/s
+- Gazebo video: UDP `5600` → `/api/video/mjpeg` on port **5001** (macOS)
 
 ## Smoke
 ```bash
 PYTHONPATH=. pytest tests/test_geo_calculator.py tests/test_vision_api.py tests/test_vision_event.py -q
-PYTHONPATH=. python run_backend.py
+PYTHONPATH=. python3 run_backend.py
 cd web && npm run dev
 ```

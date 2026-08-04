@@ -3,8 +3,15 @@
     class="vision-overlay"
     :style="{ aspectRatio: `${frameWidth} / ${frameHeight}` }"
   >
+    <!-- MJPEG (Gazebo relay) uses <img>; file/RTSP preview can use <video> -->
+    <img
+      v-if="videoSrc && isMjpeg"
+      class="vision-video"
+      :src="videoSrc"
+      alt="CV video"
+    />
     <video
-      v-if="videoSrc"
+      v-else-if="videoSrc"
       class="vision-video"
       :src="videoSrc"
       autoplay
@@ -62,11 +69,16 @@ export default {
     streamStatus: { type: String, default: 'stopped' },
   },
   computed: {
+    isMjpeg() {
+      const src = (this.videoSrc || '').toLowerCase()
+      return src.includes('mjpeg') || src.includes('/api/video/')
+    },
     streamMessage() {
       const messages = {
         stopped: 'Stream stopped',
         reconnecting: 'Stream reconnecting',
         error: 'Stream error',
+        live: 'Live',
       }
       return messages[this.streamStatus] || 'Stream unavailable'
     },
@@ -109,9 +121,10 @@ export default {
 .vision-overlay {
   position: relative;
   width: 100%;
+  min-height: 120px;
   overflow: hidden;
-  border-radius: 8px;
-  background: #020617;
+  border-radius: 6px;
+  background: #0f172a;
 }
 
 .vision-video,
@@ -123,7 +136,7 @@ export default {
   height: 100%;
 }
 
-.vision-video { object-fit: contain; }
+.vision-video { object-fit: contain; background: #020617; }
 .detection-layer { pointer-events: none; }
 
 .stream-placeholder {
@@ -134,6 +147,7 @@ export default {
   gap: 4px;
   color: #cbd5e1;
   background: #0f172a;
+  z-index: 1;
 }
 
 .stream-placeholder small { color: #64748b; }
