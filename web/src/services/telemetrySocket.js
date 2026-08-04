@@ -25,9 +25,8 @@ function backendUrl(explicit) {
   if (import.meta.env.DEV && typeof window !== 'undefined') {
     return window.location.origin
   }
-  return 'http://127.0.0.1:5001'
+  return 'http://127.0.0.1:5000'
 }
-
 function deliverTelemetry() {
   updateTimer = null
   if (closed || !pendingTelemetry) return

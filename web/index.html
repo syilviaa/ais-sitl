@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AIS SITL Platform - Veha 4</title>
+    <title>AIS SITL — Astana Training Field</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
     <style>
         * {
@@ -17,6 +17,57 @@
         }
         #app {
             height: 100vh;
+        }
+        /* Leaflet drone marker — вне scoped Vue, иначе не видно */
+        .drone-marker-icon {
+            background: transparent !important;
+            border: none !important;
+        }
+        .drone-marker-icon .drone-body {
+            width: 28px;
+            height: 28px;
+            margin: 0 auto;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .drone-marker-icon .drone-dot {
+            width: 20px;
+            height: 20px;
+            background: #2563eb;
+            border: 3px solid #fff;
+            border-radius: 50%;
+            box-shadow: 0 2px 6px rgba(0,0,0,.45);
+        }
+        .drone-marker-icon .drone-nose {
+            position: absolute;
+            top: -2px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 0;
+            height: 0;
+            border-left: 6px solid transparent;
+            border-right: 6px solid transparent;
+            border-bottom: 10px solid #1d4ed8;
+        }
+        .wp-marker-icon {
+            background: transparent !important;
+            border: none !important;
+        }
+        .wp-marker-icon .wp-num {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 26px;
+            height: 26px;
+            background: #f59e0b;
+            color: #fff;
+            border-radius: 50%;
+            font-size: 12px;
+            font-weight: 800;
+            border: 3px solid #fff;
+            box-shadow: 0 2px 6px rgba(0,0,0,.35);
         }
     </style>
 </head>

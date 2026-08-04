@@ -2,19 +2,19 @@
   <div class="map-container">
     <div id="map"></div>
     <div class="map-toolbar" v-if="planMode">
-      <span>📍 Клик — добавить точку · перетащите маркер для перемещения</span>
+      <span>Клик — добавить точку · перетащите маркер для перемещения</span>
     </div>
-    <div class="map-info" v-if="dronePosition?.lat">
+    <div class="map-info" v-if="hasPosition">
       <div class="info-badge">
-        <span class="label">Alt:</span>
+        <span class="label">Выс:</span>
         <span class="value">{{ (dronePosition.alt || 0).toFixed(1) }}m</span>
       </div>
       <div class="info-badge">
-        <span class="label">Spd:</span>
+        <span class="label">Скр:</span>
         <span class="value">{{ horizontalSpeed.toFixed(1) }} m/s</span>
       </div>
       <div class="info-badge">
-        <span class="label">Bat:</span>
+        <span class="label">Бат:</span>
         <span class="value" :class="batteryClass">{{ (dronePosition.battery || 0).toFixed(0) }}%</span>
       </div>
     </div>
@@ -46,12 +46,17 @@ export default {
     }
   },
   computed: {
+    hasPosition() {
+      const p = this.dronePosition
+      return p && p.lat != null && p.lon != null
+    },
     horizontalSpeed() {
       if (!this.dronePosition) return 0
-      if (this.dronePosition.speed) return this.dronePosition.speed
+      if (this.dronePosition.speed != null) return Number(this.dronePosition.speed)
       const vx = this.dronePosition.vx || 0
       const vy = this.dronePosition.vy || 0
-      return Math.sqrt(vx * vx + vy * vy)
+      const vz = this.dronePosition.vz || 0
+      return Math.hypot(vx, vy, vz)
     },
     batteryClass() {
       const b = this.dronePosition?.battery || 0
@@ -62,8 +67,17 @@ export default {
   },
   mounted() {
     this.initMap()
+    if (this.hasPosition) this.updateDronePosition(this.dronePosition)
   },
   methods: {
+    createDroneIcon(yaw = 0) {
+      return L.divIcon({
+        className: 'drone-marker-icon',
+        html: `<div class="drone-body" style="transform:rotate(${yaw}deg)"><div class="drone-nose"></div><div class="drone-dot"></div></div>`,
+        iconSize: [28, 28],
+        iconAnchor: [14, 14],
+      })
+    },
     initMap() {
       if (typeof L === 'undefined') return
 
@@ -76,13 +90,13 @@ export default {
       this.homeMarker = L.marker([TRAINING_HOME.lat, TRAINING_HOME.lon], {
         icon: L.divIcon({ className: 'home-pin', html: '🏠', iconSize: [28, 28] }),
       })
-      this.homeMarker.bindPopup('<b>Home</b><br/>Astana Training Field').addTo(this.map)
+      this.homeMarker.bindPopup('<b>Дом</b><br/>Учебный полигон Астана').addTo(this.map)
 
       this.droneMarker = L.marker([TRAINING_HOME.lat, TRAINING_HOME.lon], {
-        icon: L.divIcon({ className: 'drone-pin', html: '🚁', iconSize: [30, 30] }),
-        zIndexOffset: 1000,
+        icon: this.createDroneIcon(0),
+        zIndexOffset: 2000,
       })
-      this.droneMarker.bindPopup('Drone').addTo(this.map)
+      this.droneMarker.bindPopup('Дрон').addTo(this.map)
 
       this.trail = L.polyline([], { color: '#2563eb', weight: 3, opacity: 0.75 }).addTo(this.map)
 
@@ -130,10 +144,12 @@ export default {
         const marker = L.marker([wp.lat, wp.lon], {
           draggable: this.planMode,
           icon: L.divIcon({
-            className: 'wp-pin',
-            html: `<span>${idx + 1}</span>`,
-            iconSize: [24, 24],
+            className: 'wp-marker-icon',
+            html: `<div class="wp-num">${idx + 1}</div>`,
+            iconSize: [26, 26],
+            iconAnchor: [13, 13],
           }),
+          zIndexOffset: 1500 + idx,
         })
         marker.on('dragend', () => {
           const pos = marker.getLatLng()
@@ -144,18 +160,23 @@ export default {
         this.waypointMarkers.push(marker)
       })
 
-      if (waypoints.length > 1) {
+      if (waypoints.length >= 1) {
         const latlngs = waypoints.map((wp) => [wp.lat, wp.lon])
         if (this.route) this.route.remove()
-        this.route = L.polyline(latlngs, { color: '#f59e0b', weight: 2, dashArray: '8 6' }).addTo(this.map)
+        if (waypoints.length >= 2) {
+          this.route = L.polyline(latlngs, { color: '#f59e0b', weight: 3, dashArray: '8 6' }).addTo(this.map)
+        } else {
+          this.route = null
+        }
       } else if (this.route) {
         this.route.remove()
         this.route = null
       }
     },
     updateDronePosition(position) {
-      if (!this.map || !this.droneMarker || position?.lat == null) return
+      if (!this.map || !this.droneMarker || position?.lat == null || position?.lon == null) return
       this.droneMarker.setLatLng([position.lat, position.lon])
+      this.droneMarker.setIcon(this.createDroneIcon(position.yaw || 0))
       this.trailPoints.push([position.lat, position.lon])
       if (this.trailPoints.length > 300) this.trailPoints.shift()
       this.trail.setLatLngs(this.trailPoints)
@@ -174,11 +195,19 @@ export default {
     },
   },
   watch: {
-    dronePosition(val) {
-      if (val) this.updateDronePosition(val)
+    dronePosition: {
+      deep: true,
+      handler(val) {
+        if (val) this.updateDronePosition(val)
+      },
     },
-    waypoints(val) {
-      this.syncWaypoints(val || [])
+    waypoints: {
+      // In-place edits (drag, splice) keep the same array reference, so a
+      // shallow watcher would leave markers and the route line out of sync.
+      deep: true,
+      handler(val) {
+        this.syncWaypoints(val || [])
+      },
     },
     nfzGeoJson(val) {
       if (val) this.renderNfz(val)
@@ -209,11 +238,6 @@ export default {
 .value.good { color: #16a34a; }
 .value.warning { color: #d97706; }
 .value.critical { color: #dc2626; }
-:deep(.wp-pin span) {
-  display: flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; background: #f59e0b; color: #fff;
-  border-radius: 50%; font-size: 11px; font-weight: 700; border: 2px solid #fff;
-}
 :deep(.nfz-label) {
   background: rgba(220, 38, 38, 0.85); color: #fff; border: none;
   font-size: 10px; font-weight: 700; padding: 2px 6px;

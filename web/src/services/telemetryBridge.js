@@ -1,17 +1,15 @@
 /**
  * UI telemetry bridge — Мерей.
- * Жанель подключает WebSocket через telemetrySocket.js и вызывает pushTelemetry().
  */
 
 const listeners = new Set()
-let connectionStatus = 'disconnected' // connected | reconnecting | error | disconnected
+let connectionStatus = 'disconnected'
 let statusListeners = new Set()
 
 export function onTelemetry(callback) {
   listeners.add(callback)
   return () => listeners.delete(callback)
 }
-
 export function pushTelemetry(payload) {
   listeners.forEach((cb) => {
     try {
@@ -37,10 +35,44 @@ export function getConnectionStatus() {
   return connectionStatus
 }
 
-/** Нормализация REST / WebSocket payload → flat UI model */
+function normalizeBattery(raw) {
+  if (raw == null || Number.isNaN(Number(raw))) return 100
+  const value = Number(raw)
+  if (value > 100) return Math.min(100, value / 100)
+  return Math.max(0, Math.min(100, value))
+}
+
+function groundSpeed(raw, vel) {
+  const vx = Number(vel.vx ?? raw.vx ?? 0)
+  const vy = Number(vel.vy ?? raw.vy ?? 0)
+  const vz = Number(vel.vz ?? raw.vz ?? 0)
+  if (raw.ground_speed_m_s != null && !Number.isNaN(Number(raw.ground_speed_m_s))) {
+    return Number(raw.ground_speed_m_s)
+  }
+  if (vel.ground_speed_m_s != null && !Number.isNaN(Number(vel.ground_speed_m_s))) {
+    return Number(vel.ground_speed_m_s)
+  }
+  if (raw.speed != null && !Number.isNaN(Number(raw.speed))) {
+    return Number(raw.speed)
+  }
+  if (raw.speed_m_s != null && !Number.isNaN(Number(raw.speed_m_s))) {
+    return Number(raw.speed_m_s)
+  }
+  if (vel.speed != null && !Number.isNaN(Number(vel.speed))) {
+    return Number(vel.speed)
+  }
+  return Math.hypot(vx, vy, vz)
+}
+
 export function normalizeTelemetry(raw) {
   if (!raw) return null
-  if (raw.lat != null) return raw
+  if (raw.lat != null) {
+    return {
+      ...raw,
+      battery: normalizeBattery(raw.battery),
+      speed: groundSpeed(raw, {}),
+    }
+  }
 
   const pos = raw.position || {}
   const vel = raw.velocity || {}
@@ -57,11 +89,11 @@ export function normalizeTelemetry(raw) {
     vx: vel.vx ?? raw.vx ?? 0,
     vy: vel.vy ?? raw.vy ?? 0,
     vz: vel.vz ?? raw.vz ?? 0,
-    speed: vel.speed ?? raw.speed ?? 0,
+    speed: groundSpeed(raw, vel),
     roll: att.roll ?? raw.roll ?? 0,
     pitch: att.pitch ?? raw.pitch ?? 0,
     yaw: att.yaw ?? raw.yaw ?? 0,
-    battery: bat.percent ?? raw.battery ?? 100,
+    battery: normalizeBattery(bat.percent ?? raw.battery ?? raw.battery_percent),
     gps_status: gps.fix ?? raw.gps_status ?? 'no_fix',
     satellites: gps.satellites ?? raw.satellites ?? 0,
     armed: state.armed ?? raw.armed ?? false,
