@@ -27,7 +27,6 @@ function backendUrl(explicit) {
   }
   return 'http://127.0.0.1:5000'
 }
-
 function deliverTelemetry() {
   updateTimer = null
   if (closed || !pendingTelemetry) return

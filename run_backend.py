@@ -75,6 +75,10 @@ def main():
         logger.info("  GET    /api/telemetry/stats        - Telemetry stats")
         logger.info("  GET    /api/failsafe/status        - Failsafe status")
         logger.info("  GET    /api/failsafe/events        - Failsafe events")
+        logger.info("  GET    /api/vision/latest          - Latest CV events")
+        logger.info("  GET    /api/vision/events          - CV event history")
+        logger.info("  POST   /api/vision/events          - Publish VisionEvent")
+        logger.info("  GET    /api/vision/health          - CV service status")
 
         logger.info("")
         logger.info("🌐 WebSocket Events:")
@@ -82,6 +86,8 @@ def main():
         logger.info("  disconnect           - Client disconnected")
         logger.info("  start_telemetry      - Start 10 Hz stream")
         logger.info("  stop_telemetry       - Stop streaming")
+        logger.info("  subscribe_detections - CV detection stream")
+        logger.info("  subscribe_alerts     - CV alert stream")
 
         logger.info("")
         port = default_port()

@@ -1,0 +1,21 @@
+{
+  "timestamp": "2026-08-04T09:34:36.701Z",
+  "source": "/private/tmp/ais-cv-models/demo1080p.mp4",
+  "model": "/private/tmp/ais-cv-models/yolov8n.pt",
+  "confidence_threshold": 0.65,
+  "device": "cpu",
+  "platform": "macOS-15.6.1-arm64-arm-64bit",
+  "processor": "arm",
+  "python": "3.11.15",
+  "frame_width": 1920,
+  "frame_height": 1080,
+  "requested_max_frames": 20,
+  "requested_warmup_frames": 1,
+  "warmed_frames": 1,
+  "processed_frames": 20,
+  "total_detections": 79,
+  "model_load_seconds": 15.8115,
+  "warmup_seconds": 1.2509,
+  "elapsed_seconds": 1.0069,
+  "average_fps": 19.86
+}

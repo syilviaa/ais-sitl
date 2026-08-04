@@ -135,6 +135,24 @@
             :active="droneReady && wsStatus === 'connected'"
             :api-base="API_BASE"
           />
+          <div class="cv-runtime">
+            <VisionOverlay
+              :video-src="vision.videoSrc"
+              :detections="vision.detections"
+              :frame-width="vision.frameWidth"
+              :frame-height="vision.frameHeight"
+              :stream-status="vision.streamStatus"
+            />
+            <VisionPanel
+              :camera-status="vision.cameraStatus"
+              :model-status="vision.modelStatus"
+              :stream-status="vision.streamStatus"
+              :model-name="vision.modelName"
+              :fps="vision.fps"
+              :latency-ms="vision.latencyMs"
+            />
+            <VisionAlertsPanel />
+          </div>
         </section>
 
         <section class="panel event-panel">
@@ -160,6 +178,9 @@
 <script>
 import MapComponent from './components/MapComponent.vue'
 import VideoStream from './components/VideoStream.vue'
+import VisionOverlay from './components/VisionOverlay.vue'
+import VisionPanel from './components/VisionPanel.vue'
+import VisionAlertsPanel from './components/VisionAlertsPanel.vue'
 import { onTelemetry, onConnectionStatus, normalizeTelemetry } from './services/telemetryBridge.js'
 import { connectTelemetry, disconnectTelemetry, requestTelemetryStart } from './services/telemetrySocket.js'
 
@@ -171,7 +192,13 @@ const API_BASE = import.meta.env.VITE_API_URL
 
 export default {
   name: 'App',
-  components: { MapComponent, VideoStream },
+  components: {
+    MapComponent,
+    VideoStream,
+    VisionOverlay,
+    VisionPanel,
+    VisionAlertsPanel,
+  },
   data() {
     return {
       apiConnected: false,
@@ -204,6 +231,18 @@ export default {
       failsafe: { running: false, battery_warning: false, battery_critical: false },
       rtlReason: null,
       events: [],
+      vision: {
+        videoSrc: import.meta.env.VITE_VISION_STREAM_URL || '',
+        detections: [],
+        frameWidth: 1920,
+        frameHeight: 1080,
+        cameraStatus: 'disconnected',
+        modelStatus: 'missing',
+        streamStatus: 'stopped',
+        modelName: '',
+        fps: null,
+        latencyMs: null,
+      },
       unsubTelemetry: null,
       unsubWsStatus: null,
       restFallbackInterval: null,
@@ -862,4 +901,13 @@ export default {
 
 .event-time { font-family: monospace; color: #94a3b8; font-size: 0.62rem; margin-right: 0.3rem; }
 .empty-state { text-align: center; color: #94a3b8; padding: 0.35rem; }
+.cv-runtime {
+  display: flex;
+  flex-direction: column;
+  gap: .45rem;
+  margin-top: .55rem;
+  padding-top: .55rem;
+  border-top: 1px solid #e2e8f0;
+}
+
 </style>

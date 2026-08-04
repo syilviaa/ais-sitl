@@ -36,6 +36,11 @@ from src.backend.services.recording_service import RecordingService
 from src.backend.services.geofence_service import GeofenceService
 from src.backend.services.metrics_service import MetricsService
 from src.backend.services.video_service import video_relay
+from src.backend.services.vision_event_service import (
+    SlidingWindowRateLimiter,
+    VisionEventService,
+)
+from src.backend.routes.vision import vision_bp
 from src.backend import database
 from src.backend.async_runner import run_async, schedule_coroutine
 from src.autopilot.geofence import GeofenceValidator
@@ -78,6 +83,10 @@ def create_app(config=None):
 
     if config:
         app.config.update(config)
+    app.config.setdefault(
+        "VISION_SNAPSHOT_DIR",
+        str(Path(os.environ.get("VISION_SNAPSHOT_DIR", "snapshots")).resolve()),
+    )
 
     # Enable CORS
     CORS(app)
@@ -105,6 +114,29 @@ def create_app(config=None):
     app.metrics_service = MetricsService()
     app.clients = set()
     app.pending_telemetry_clients = set()
+    app.vision_service = VisionEventService()
+    app.vision_rate_limiter = SlidingWindowRateLimiter(limit=10)
+    app.vision_clients = {"detection": set(), "alert": set()}
+    app.register_blueprint(vision_bp)
+
+    def publish_vision_event(event):
+        """Store one validated event and broadcast it at no more than 10 Hz."""
+        app.vision_service.add(event)
+        if not app.vision_rate_limiter.allow():
+            app.vision_service.log_error(
+                "socket_rate_limited",
+                "Vision event stored but Socket.IO broadcast was limited",
+                {"event_id": event.event_id},
+            )
+            return False
+        payload = event.to_dict()
+        for client_id in tuple(app.vision_clients["detection"]):
+            socketio.emit("vision_detection", payload, to=client_id)
+        for client_id in tuple(app.vision_clients["alert"]):
+            socketio.emit("vision_alert", payload, to=client_id)
+        return True
+
+    app.publish_vision_event = publish_vision_event
 
     # Spawn the GStreamer relay before any MAVSDK/gRPC session exists: forking a
     # process that already runs gRPC threads kills mavsdk_server (heartbeat loss).
@@ -1024,6 +1056,8 @@ def create_app(config=None):
         """Handle client disconnection."""
         client_id = request.sid
         app.clients.discard(client_id)
+        app.vision_clients["detection"].discard(client_id)
+        app.vision_clients["alert"].discard(client_id)
         if app.telemetry_service:
             app.telemetry_service.unregister_client(client_id)
         logger.info(
@@ -1053,6 +1087,24 @@ def create_app(config=None):
         if app.telemetry_service:
             app.telemetry_service.unregister_client(client_id)
             emit('telemetry_stopped', {'client_id': client_id})
+
+    @socketio.on("subscribe_detections")
+    def on_subscribe_detections():
+        client_id = request.sid
+        app.vision_clients["detection"].add(client_id)
+        emit("response", {
+            "status": "subscribed",
+            "event_type": "vision_detection",
+        })
+
+    @socketio.on("subscribe_alerts")
+    def on_subscribe_alerts():
+        client_id = request.sid
+        app.vision_clients["alert"].add(client_id)
+        emit("response", {
+            "status": "subscribed",
+            "event_type": "vision_alert",
+        })
 
     @socketio.on('fleet_status')
     def on_fleet_status():

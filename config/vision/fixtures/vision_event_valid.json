@@ -1,0 +1,11 @@
+{
+  "event_id": "d8c7716d-bf56-4f57-a88c-4cb0ba2c8846",
+  "timestamp": "2026-08-01T09:00:00Z",
+  "class_name": "Person",
+  "confidence": 0.82,
+  "bbox": [100.0, 200.0, 260.0, 520.0],
+  "latitude": 51.1695,
+  "longitude": 71.4492,
+  "snapshot_url": "/api/vision/snapshots/d8c7716d-bf56-4f57-a88c-4cb0ba2c8846.jpg",
+  "source_id": "rtsp://test-camera/stream"
+}

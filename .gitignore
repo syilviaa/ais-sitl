@@ -33,6 +33,9 @@ htmlcov/
 logs/
 *.log
 
+# Local database
+ais_sitl.db
+
 # Docker
 .docker/
 docker-compose.override.yml
@@ -70,3 +73,6 @@ cache/
 *.bag
 *.bagindex
 node_modules/
+
+# Local CV virtual environment
+.venv-cv/

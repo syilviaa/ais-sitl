@@ -10,7 +10,6 @@ export function onTelemetry(callback) {
   listeners.add(callback)
   return () => listeners.delete(callback)
 }
-
 export function pushTelemetry(payload) {
   listeners.forEach((cb) => {
     try {
